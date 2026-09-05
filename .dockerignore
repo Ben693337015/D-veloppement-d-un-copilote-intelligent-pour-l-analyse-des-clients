@@ -1,0 +1,26 @@
+# Réduit le contexte envoyé au démon Docker à chaque build (plus rapide),
+# et évite qu'un fichier local sans rapport (cache Python, venv, .git...)
+# ne déclenche une invalidation de cache inutile sur `COPY . .`.
+
+.git/
+.github/
+__pycache__/
+**/__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# Secrets locaux : jamais dans l'image, injectés via env_file/docker-compose
+.env
+
+# Jeux de données volumineux téléchargés localement — inutiles dans l'image
+# (l'ingestion se fait via l'API ou un volume monté, cf. README §1)
+data/raw/
+data/processed/
+
+# Documentation / éditeurs — inutile à l'exécution
+*.md
+.vscode/
+.idea/

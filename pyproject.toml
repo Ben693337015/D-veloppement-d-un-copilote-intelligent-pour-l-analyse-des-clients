@@ -1,0 +1,14 @@
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+exclude = ["alembic/versions"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+# E501: longueur de ligne gérée par le formatteur, pas critique pour un projet académique.
+# B008: Depends(...) en valeur par défaut est le pattern idiomatique de FastAPI, pas un bug.
+ignore = ["E501", "B008"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]

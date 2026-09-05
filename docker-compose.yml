@@ -1,0 +1,67 @@
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: copilote_pme_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-copilote_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change_me}
+      POSTGRES_DB: ${POSTGRES_DB:-copilote_pme}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+      - ./scripts/init_db.sql:/docker-entrypoint-initdb.d/init_db.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-copilote_user} -d ${POSTGRES_DB:-copilote_pme}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: copilote_pme_api
+    restart: unless-stopped
+    env_file:
+      - .env
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./app:/app/app
+      - ./data:/app/data
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    healthcheck:
+      # Pas de curl dans l'image (pas ajouté au Dockerfile juste pour ça) :
+      # on utilise urllib, déjà présent dans toute installation Python.
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health')\" || exit 1"]
+      interval: 10s
+      timeout: 5s
+      start_period: 15s
+      retries: 10
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: copilote_pme_frontend
+    restart: unless-stopped
+    # Aucune variable d'environnement nécessaire par défaut : le frontend
+    # appelle l'API via un chemin RELATIF ("/api/v1"), redirigé par le
+    # reverse-proxy Nginx interne à ce conteneur (cf. frontend/nginx.conf)
+    # vers le service "api" du réseau Docker Compose — jamais résolu par
+    # le navigateur de l'utilisateur, contrairement à l'ancien dashboard
+    # Streamlit (dont le code Python tournait côté serveur et pouvait,
+    # lui, résoudre "api" directement).
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "8501:8501"
+
+volumes:
+  pg_data:
