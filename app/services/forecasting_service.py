@@ -49,7 +49,7 @@ import pandas as pd
 from sqlalchemy.orm import Session
 
 from app.core.preprocessing import winsoriser
-from app.models import Transaction
+from app.models import Transaction, Tresorerie
 
 MODELES_DISPONIBLES = {"prophet", "arima", "xgboost"}
 HISTORIQUE_MIN_JOURS = 7
@@ -123,7 +123,7 @@ def _rmse_mae(y_vrai, y_predit) -> tuple[float, float]:
     return rmse, mae
 
 
-def _previsions_prophet(quotidien: pd.DataFrame, horizon_jours: int):
+def _previsions_prophet(quotidien: pd.DataFrame, horizon_jours: int, clamp_non_negatif: bool = True):
     from prophet import Prophet
 
     logging.getLogger("cmdstanpy").setLevel(logging.WARNING)
@@ -151,11 +151,12 @@ def _previsions_prophet(quotidien: pd.DataFrame, horizon_jours: int):
     futur = modele_final.make_future_dataframe(periods=horizon_jours)
     prevision = modele_final.predict(futur).tail(horizon_jours)
 
+    plancher = 0.0 if clamp_non_negatif else float("-inf")
     points = [
         {
             "date_prevision": ligne.ds.date(),
-            "valeur_prevue": max(0.0, float(ligne.yhat)),
-            "borne_basse": max(0.0, float(ligne.yhat_lower)),
+            "valeur_prevue": max(plancher, float(ligne.yhat)),
+            "borne_basse": max(plancher, float(ligne.yhat_lower)),
             "borne_haute": float(ligne.yhat_upper),
         }
         for ligne in prevision.itertuples(index=False)
@@ -163,7 +164,7 @@ def _previsions_prophet(quotidien: pd.DataFrame, horizon_jours: int):
     return points, rmse, mae
 
 
-def _previsions_arima(quotidien: pd.DataFrame, horizon_jours: int):
+def _previsions_arima(quotidien: pd.DataFrame, horizon_jours: int, clamp_non_negatif: bool = True):
     from statsmodels.tsa.arima.model import ARIMA
 
     train, test = _decoupe_train_test(quotidien)
@@ -178,6 +179,7 @@ def _previsions_arima(quotidien: pd.DataFrame, horizon_jours: int):
     moyenne = resultat.predicted_mean
     intervalle = resultat.conf_int(alpha=0.2)  # intervalle de confiance à 80%
 
+    plancher = 0.0 if clamp_non_negatif else float("-inf")
     dernier_jour = quotidien["ds"].max()
     points = []
     for i in range(horizon_jours):
@@ -185,8 +187,8 @@ def _previsions_arima(quotidien: pd.DataFrame, horizon_jours: int):
         points.append(
             {
                 "date_prevision": date_prevision,
-                "valeur_prevue": max(0.0, float(moyenne[i])),
-                "borne_basse": max(0.0, float(intervalle[i][0])),
+                "valeur_prevue": max(plancher, float(moyenne[i])),
+                "borne_basse": max(plancher, float(intervalle[i][0])),
                 "borne_haute": float(intervalle[i][1]),
             }
         )
@@ -230,7 +232,7 @@ FEATURES_XGBOOST = [
 ]
 
 
-def _previsions_xgboost(quotidien: pd.DataFrame, horizon_jours: int):
+def _previsions_xgboost(quotidien: pd.DataFrame, horizon_jours: int, clamp_non_negatif: bool = True):
     from xgboost import XGBRegressor
 
     cal_feries = _calendrier_feries(
@@ -277,7 +279,8 @@ def _previsions_xgboost(quotidien: pd.DataFrame, horizon_jours: int):
                 }
             ]
         )
-        valeur_prevue = max(0.0, float(modele_final.predict(ligne[FEATURES_XGBOOST])[0]))
+        valeur_brute = float(modele_final.predict(ligne[FEATURES_XGBOOST])[0])
+        valeur_prevue = max(0.0, valeur_brute) if clamp_non_negatif else valeur_brute
         historique_y.append(valeur_prevue)
         points.append(
             {
@@ -294,27 +297,41 @@ def _previsions_xgboost(quotidien: pd.DataFrame, horizon_jours: int):
     return points, rmse, mae
 
 
-def get_previsions_ventes(db: Session, horizon_jours: int = 30, modele: str = "prophet") -> dict:
+def _generer_prevision(
+    quotidien: pd.DataFrame,
+    horizon_jours: int,
+    modele: str,
+    n_jours_plafonnes: int = 0,
+    clamp_non_negatif: bool = True,
+) -> dict:
+    """Cœur commun de prévision, indépendant du domaine métier (ventes OU
+    trésorerie) : reçoit une série quotidienne déjà construite (colonnes
+    ds, y), applique le modèle demandé et gère le repli baseline.
+
+    Extrait de `get_previsions_ventes` en tâche #1 de la roadmap de
+    clôture, pour être réutilisé tel quel par `get_previsions_tresorerie`
+    plutôt que de dupliquer la logique de validation/dispatch.
+
+    `clamp_non_negatif` : True pour le CA (une vente ne peut pas être
+    négative), False pour un solde de trésorerie (un solde négatif est un
+    signal réel — l'alerte de risque de déficit, cf. tâche #2, en dépend
+    directement : le plafonner à 0 masquerait justement ce qu'on veut
+    détecter).
+    """
     if modele not in MODELES_DISPONIBLES:
         raise ValueError(f"Modèle inconnu : '{modele}' (attendu : {sorted(MODELES_DISPONIBLES)})")
 
-    quotidien, n_jours_plafonnes = _serie_ca_journalier(db)
     n_jours_historique = len(quotidien)
     avertissements: list[str] = []
     if n_jours_plafonnes:
         avertissements.append(
-            f"{n_jours_plafonnes} jour(s) au CA plafonné (prétraitement anti-valeurs-extrêmes) "
-            "avant l'ajustement du modèle — évite qu'une seule journée aberrante (erreur de "
-            "saisie) ne fausse toute la prévision. Le CA réel affiché ailleurs (KPIs, rapport) "
-            "n'est pas affecté."
+            f"{n_jours_plafonnes} jour(s) plafonné(s) (prétraitement anti-valeurs-extrêmes) "
+            "avant l'ajustement du modèle — évite qu'une seule valeur isolée aberrante ne "
+            "fausse toute la prévision."
         )
 
     seuil_historique = HISTORIQUE_MIN_JOURS_XGBOOST if modele == "xgboost" else HISTORIQUE_MIN_JOURS
     if n_jours_historique < seuil_historique:
-        # Historique insuffisant pour le modèle demandé -> baseline naïve
-        # explicitement nommée comme telle (jamais faire croire à un modèle
-        # entraîné/validé alors qu'il n'y a pas assez de signal). XGBoost
-        # exige plus de jours que Prophet/ARIMA à cause du lag J-7.
         moyenne = float(quotidien["y"].mean()) if n_jours_historique else 0.0
         dernier_jour = quotidien["ds"].max() if n_jours_historique else pd.Timestamp.today().normalize()
         points = [
@@ -336,10 +353,10 @@ def get_previsions_ventes(db: Session, horizon_jours: int = 30, modele: str = "p
         }
 
     if modele == "arima":
-        points, rmse, mae = _previsions_arima(quotidien, horizon_jours)
+        points, rmse, mae = _previsions_arima(quotidien, horizon_jours, clamp_non_negatif)
         nom_modele = "ARIMA(1,1,1)"
     elif modele == "xgboost":
-        points, rmse, mae = _previsions_xgboost(quotidien, horizon_jours)
+        points, rmse, mae = _previsions_xgboost(quotidien, horizon_jours, clamp_non_negatif)
         nom_modele = "XGBoost"
         avertissements.append(
             "XGBoost ne fournit pas d'intervalle de confiance natif (borne_basse/borne_haute "
@@ -352,7 +369,7 @@ def get_previsions_ventes(db: Session, horizon_jours: int = 30, modele: str = "p
                 "l'horizon. Prophet ou ARIMA restent préférables pour des horizons longs."
             )
     else:
-        points, rmse, mae = _previsions_prophet(quotidien, horizon_jours)
+        points, rmse, mae = _previsions_prophet(quotidien, horizon_jours, clamp_non_negatif)
         nom_modele = "Prophet"
 
     return {
@@ -363,3 +380,62 @@ def get_previsions_ventes(db: Session, horizon_jours: int = 30, modele: str = "p
         "mae_validation": mae,
         "avertissements": avertissements,
     }
+
+
+def get_previsions_ventes(db: Session, horizon_jours: int = 30, modele: str = "prophet") -> dict:
+    quotidien, n_jours_plafonnes = _serie_ca_journalier(db)
+    return _generer_prevision(quotidien, horizon_jours, modele, n_jours_plafonnes, clamp_non_negatif=True)
+
+
+def _serie_solde_journalier(db: Session) -> tuple[pd.DataFrame, int]:
+    """Solde de trésorerie cumulé, un point par jour — même contrat que
+    `_serie_ca_journalier` (colonnes ds, y) pour réutiliser telle quelle la
+    mécanique de prévision de `_generer_prevision`.
+
+    Différence clé avec le CA : un jour SANS mouvement ne vaut pas 0 (le
+    solde ne se remet pas à zéro chaque jour, contrairement au CA
+    journalier) — il doit reporter le solde de la veille. On calcule donc
+    le mouvement NET (encaissements - décaissements) par jour, complété à
+    0 sur le calendrier, puis on prend la somme cumulée : un jour sans
+    mouvement a un delta nul, donc le cumul reporte naturellement le solde
+    précédent.
+
+    Pas de winsorizing ici (contrairement au CA) : un solde qui varie
+    fortement d'un jour à l'autre (gros encaissement client, paiement
+    fournisseur important) est un signal réel de trésorerie, pas une
+    erreur de saisie à plafonner.
+    """
+    lignes = db.query(Tresorerie.date_mouvement, Tresorerie.type_mouvement, Tresorerie.montant).all()
+    if not lignes:
+        return pd.DataFrame(columns=["ds", "y"]), 0
+
+    df = pd.DataFrame(lignes, columns=["date_mouvement", "type_mouvement", "montant"])
+    df["ds"] = pd.to_datetime(df["date_mouvement"]).dt.normalize()
+    df["delta"] = np.where(
+        df["type_mouvement"] == "encaissement",
+        df["montant"].astype(float),
+        -df["montant"].astype(float),
+    )
+    quotidien_delta = df.groupby("ds", as_index=False)["delta"].sum().sort_values("ds").reset_index(drop=True)
+
+    calendrier_complet = pd.date_range(quotidien_delta["ds"].min(), quotidien_delta["ds"].max(), freq="D")
+    quotidien_delta = (
+        quotidien_delta.set_index("ds")
+        .reindex(calendrier_complet, fill_value=0.0)
+        .rename_axis("ds")
+        .reset_index()
+    )
+    quotidien_delta["y"] = quotidien_delta["delta"].cumsum()
+    return quotidien_delta[["ds", "y"]], 0
+
+
+def get_previsions_tresorerie(db: Session, horizon_jours: int = 30, modele: str = "prophet") -> dict:
+    """Tâche #1 de la roadmap de clôture — tient l'engagement "trésorerie
+    prévisionnelle" du cahier des charges (§3.2), jusqu'ici réduit à un
+    solde instantané (`analytics_service.get_kpis_globaux`).
+
+    `clamp_non_negatif=False` : contrairement au CA, un solde prévu
+    négatif est un résultat légitime et même le signal recherché par la
+    tâche #2 (alerte de risque de déficit)."""
+    quotidien, n_jours_plafonnes = _serie_solde_journalier(db)
+    return _generer_prevision(quotidien, horizon_jours, modele, n_jours_plafonnes, clamp_non_negatif=False)

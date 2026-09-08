@@ -39,8 +39,28 @@ class AlerteStock(BaseModel):
     niveau: str  # "critique" | "attention" | "ok"
 
 
+class PrevisionTresorerie(BaseModel):
+    """Sortie du calcul de prévision trésorerie — même contrat que
+    PrevisionVentes (tâche #1 de la roadmap de clôture)."""
+
+    modele_utilise: str
+    horizon_jours: int
+    points: list[PointPrevision]
+    rmse_validation: float | None = None
+    mae_validation: float | None = None
+    avertissements: list[str] = []
+
+
 class AlerteTresorerie(BaseModel):
     date_alerte: date
     solde_projete: float
     seuil_critique: float
+    niveau: str  # "ok" | "vigilance" | "risque_deficit"
     message: str
+
+
+class PrevisionTresorerieAvecAlerte(BaseModel):
+    """Sortie de GET /api/v1/analytics/cashflow/forecast (tâche #2)."""
+
+    prevision: PrevisionTresorerie
+    alerte: AlerteTresorerie

@@ -69,7 +69,23 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 # paresseusement au premier appel API en production — ce qui bloquerait la
 # première requête pendant plusieurs minutes et pourrait dépasser le
 # timeout du client.
+
 RUN python -c "import cmdstanpy; cmdstanpy.install_cmdstan(cores=2)"
+
+# BUG CONNU (prophet==1.1.5) : le package embarque sa propre copie locale de
+# CmdStan (prophet/stan_model/cmdstan-2.33.1), téléchargée séparément lors
+# du `pip install prophet` ci-dessus, INDÉPENDAMMENT de l'installation
+# globale ci-dessus. Si ce téléchargement est interrompu (souci réseau
+# pendant le build), le dossier existe mais est incomplet — et Prophet
+# l'utilise quand même en priorité (il vérifie seulement que le dossier
+# EXISTE, pas qu'il est complet, cf. prophet/models.py ligne 93), plutôt
+# que de se rabattre sur l'installation globale ci-dessus qui, elle,
+# fonctionne. On supprime donc systématiquement cette copie locale pour
+# forcer l'usage de l'installation globale vérifiée, et on fait échouer le
+# build immédiatement si Prophet ne parvient toujours pas à démarrer —
+# plutôt que de le découvrir en pleine démonstration.
+RUN rm -rf $(python -c "import importlib.resources as r; print(r.files('prophet') / 'stan_model' / 'cmdstan-2.33.1')")
+RUN python -c "from prophet import Prophet; Prophet(); print('Prophet + CmdStan : OK')"
 
 # Copié APRÈS l'installation des dépendances : un changement de code
 # applicatif (le cas le plus fréquent en développement) n'invalide donc

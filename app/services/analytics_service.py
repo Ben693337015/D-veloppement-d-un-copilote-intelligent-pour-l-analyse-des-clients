@@ -15,6 +15,8 @@ Choix de modèle documenté dans README.md §"Choix des modèles & benchmarks" :
   pas d'intervalle de confiance natif.
 """
 
+from datetime import date
+
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
@@ -85,3 +87,71 @@ def get_stock_alertes(db: Session) -> list[dict]:
                 }
             )
     return alertes
+
+
+def get_alerte_tresorerie(
+    prevision: dict,
+    horizon_jours: int,
+    seuil_critique: float = 0.0,
+    marge_vigilance: float | None = None,
+) -> dict:
+    """Tâche #2 de la roadmap de clôture — branche enfin le schéma
+    `AlerteTresorerie` (jusqu'ici défini mais orphelin) sur une donnée
+    réelle : la prévision de solde produite par
+    `forecasting_service.get_previsions_tresorerie` (tâche #1).
+
+    Reçoit la prévision déjà calculée par l'appelant (plutôt que de la
+    recalculer elle-même) pour ne jamais ré-entraîner le modèle une
+    seconde fois inutilement dans le même appel API.
+
+    Le niveau d'alerte est calculé sur le POINT LE PLUS BAS de tout
+    l'horizon, pas seulement le dernier jour : un risque de déficit peut
+    survenir avant la fin de la période (ex. un gros paiement fournisseur
+    à J+20) puis se résorber ensuite — s'arrêter au solde de fin
+    d'horizon masquerait ce risque intermédiaire.
+    """
+    points = prevision["points"]
+
+    if not points:
+        return {
+            "date_alerte": date.today(),
+            "solde_projete": 0.0,
+            "seuil_critique": seuil_critique,
+            "niveau": "ok",
+            "message": "Aucun mouvement de trésorerie enregistré : rien à projeter.",
+        }
+
+    if marge_vigilance is None:
+        # Repli simple faute de seuil métier communiqué par la PME : 15% de
+        # l'amplitude de la prévision comme zone tampon avant le seuil
+        # critique, avec un plancher pour éviter une marge dérisoire si la
+        # série est très plate.
+        amplitude = max(p["valeur_prevue"] for p in points) - min(p["valeur_prevue"] for p in points)
+        marge_vigilance = max(amplitude * 0.15, 1.0)
+
+    pire_point = min(points, key=lambda p: p["valeur_prevue"])
+    solde_projete = pire_point["valeur_prevue"]
+
+    if solde_projete < seuil_critique:
+        niveau = "risque_deficit"
+        message = (
+            f"Solde projeté négatif ({solde_projete:.0f}) au {pire_point['date_prevision']} — "
+            f"risque de déficit de trésorerie dans les {horizon_jours} prochains jours."
+        )
+    elif solde_projete < seuil_critique + marge_vigilance:
+        niveau = "vigilance"
+        message = (
+            f"Solde projeté proche du seuil critique ({solde_projete:.0f} au "
+            f"{pire_point['date_prevision']}) — à surveiller."
+        )
+    else:
+        niveau = "ok"
+        message = f"Solde projeté au-dessus du seuil critique sur les {horizon_jours} prochains jours."
+
+    return {
+        "date_alerte": pire_point["date_prevision"],
+        "solde_projete": solde_projete,
+        "seuil_critique": seuil_critique,
+        "niveau": niveau,
+        "message": message,
+    }
