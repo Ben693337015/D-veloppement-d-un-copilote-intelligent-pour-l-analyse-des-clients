@@ -127,7 +127,7 @@ installe les paquets Debian correspondants. Sans eux, `POST /api/v1/report/pdf` 
                         │  Frontend React (frontend/)  │
                         │  Nginx : sert le build +   │
                         │  reverse-proxy /api -> api │
-                        │  (port 8501)               │
+                        │  (port 3000)               │
                         └──────────────┬────────────┘
                                        │ HTTP/JSON (frontend/src/api/client.js,
                                        │ seul point d'accès réseau du frontend)
@@ -156,7 +156,7 @@ installe les paquets Debian correspondants. Sans eux, `POST /api/v1/report/pdf` 
 **Pourquoi un reverse-proxy Nginx ?** Le frontend s'exécute dans le navigateur, pas côté serveur
 — il ne peut jamais résoudre `api` (nom du service, valide uniquement à l'intérieur du réseau
 Docker Compose). Le conteneur `frontend` sert donc le build statique **et** fait office de
-reverse-proxy : le navigateur n'appelle qu'une seule origine (`localhost:8501`), Nginx redirige
+reverse-proxy : le navigateur n'appelle qu'une seule origine (`localhost:3000`), Nginx redirige
 en interne `/api/*` vers `http://api:8000/api/*` (cf. `frontend/nginx.conf`). Bénéfice
 secondaire : aucun problème de CORS.
 
@@ -437,15 +437,17 @@ docker compose ps
 curl http://localhost:8000/health   # {"status":"ok"}
 ```
 
-Ouvrir **http://localhost:8501** (frontend) — créer un compte au premier accès (onglet
+Ouvrir **http://localhost:3000** (frontend) — créer un compte au premier accès (onglet
 « Créer un compte », email + mot de passe ≥ 8 caractères).
 
 | Service | URL |
 |---|---|
-| Frontend | http://localhost:8501 |
+| Frontend | http://localhost:3000 |
 | API | http://localhost:8000 |
 | Swagger (tester l'API, bouton "Authorize") | http://localhost:8000/docs |
 | ReDoc | http://localhost:8000/redoc |
+
+ Port 3000 choisi pour éviter un conflit avec les plages de ports réservées par Hyper-V sur Windows (`netsh interface ipv4 show excludedportrange`). Si ce port est lui aussi pris chez vous, changez-le dans `docker-compose.yml` (service `frontend`, section `ports`).
 
 **Commandes utiles**
 

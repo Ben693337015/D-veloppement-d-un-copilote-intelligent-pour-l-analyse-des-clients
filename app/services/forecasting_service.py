@@ -231,6 +231,35 @@ FEATURES_XGBOOST = [
     "moyenne_mobile_7",
 ]
 
+NOMS_LISIBLES_FEATURES = {
+    "jour_semaine": "Jour de la semaine",
+    "mois": "Mois",
+    "est_weekend": "Week-end",
+    "est_ferie": "Jour férié",
+    "lag_1": "Valeur de la veille (J-1)",
+    "lag_7": "Valeur à J-7 (même jour, semaine précédente)",
+    "moyenne_mobile_7": "Moyenne mobile 7 jours",
+}
+
+
+def _calculer_explicabilite_xgboost(modele_final, features: pd.DataFrame, top_n: int = 3) -> list[dict]:
+    """Tâche #3 : SHAP TreeExplainer sur XGBoost déjà entraîné (aucun coût
+    d'entraînement supplémentaire). Importance = moyenne de |valeur SHAP|
+    par variable — lecture standard indépendante du signe."""
+    import shap
+
+    explainer = shap.TreeExplainer(modele_final)
+    valeurs_shap = explainer.shap_values(features[FEATURES_XGBOOST])
+    importance_moyenne = np.abs(valeurs_shap).mean(axis=0)
+
+    classement = sorted(
+        zip(FEATURES_XGBOOST, importance_moyenne), key=lambda item: item[1], reverse=True
+    )[:top_n]
+    return [
+        {"variable": NOMS_LISIBLES_FEATURES.get(nom, nom), "importance": float(valeur)}
+        for nom, valeur in classement
+    ]
+
 
 def _previsions_xgboost(quotidien: pd.DataFrame, horizon_jours: int, clamp_non_negatif: bool = True):
     from xgboost import XGBRegressor
@@ -256,6 +285,7 @@ def _previsions_xgboost(quotidien: pd.DataFrame, horizon_jours: int, clamp_non_n
 
     modele_final = XGBRegressor(n_estimators=200, max_depth=4, learning_rate=0.05, random_state=42)
     modele_final.fit(features[FEATURES_XGBOOST], features["y"])
+    explicabilite = _calculer_explicabilite_xgboost(modele_final, features)
 
     # Prévision multi-jours par récursion : XGBoost n'a pas d'équivalent
     # natif du forecast multi-step de Prophet/ARIMA. Chaque jour prédit
@@ -294,7 +324,7 @@ def _previsions_xgboost(quotidien: pd.DataFrame, horizon_jours: int, clamp_non_n
                 "borne_haute": None,
             }
         )
-    return points, rmse, mae
+    return points, rmse, mae, explicabilite
 
 
 def _generer_prevision(
@@ -323,6 +353,7 @@ def _generer_prevision(
 
     n_jours_historique = len(quotidien)
     avertissements: list[str] = []
+    explicabilite: list[dict] = []
     if n_jours_plafonnes:
         avertissements.append(
             f"{n_jours_plafonnes} jour(s) plafonné(s) (prétraitement anti-valeurs-extrêmes) "
@@ -350,13 +381,14 @@ def _generer_prevision(
             "rmse_validation": None,
             "mae_validation": None,
             "avertissements": avertissements,
+            "explicabilite": [],
         }
 
     if modele == "arima":
         points, rmse, mae = _previsions_arima(quotidien, horizon_jours, clamp_non_negatif)
         nom_modele = "ARIMA(1,1,1)"
     elif modele == "xgboost":
-        points, rmse, mae = _previsions_xgboost(quotidien, horizon_jours, clamp_non_negatif)
+        points, rmse, mae, explicabilite = _previsions_xgboost(quotidien, horizon_jours, clamp_non_negatif)
         nom_modele = "XGBoost"
         avertissements.append(
             "XGBoost ne fournit pas d'intervalle de confiance natif (borne_basse/borne_haute "
@@ -379,6 +411,7 @@ def _generer_prevision(
         "rmse_validation": rmse,
         "mae_validation": mae,
         "avertissements": avertissements,
+        "explicabilite": explicabilite,
     }
 
 

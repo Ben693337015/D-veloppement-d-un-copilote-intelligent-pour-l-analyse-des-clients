@@ -19,6 +19,9 @@ class PointPrevision(BaseModel):
     borne_basse: float | None = None
     borne_haute: float | None = None
 
+class ImportanceVariable(BaseModel):
+    variable: str
+    importance: float
 
 class PrevisionVentes(BaseModel):
     """Sortie de GET /api/v1/analytics/forecast/sales — module Maslaw."""
@@ -29,6 +32,7 @@ class PrevisionVentes(BaseModel):
     rmse_validation: float | None = None
     mae_validation: float | None = None
     avertissements: list[str] = []
+    explicabilite: list[ImportanceVariable] = []
 
 
 class AlerteStock(BaseModel):
