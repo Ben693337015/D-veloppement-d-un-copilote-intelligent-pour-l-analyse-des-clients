@@ -18,8 +18,16 @@ priorité). Sans clé configurée, retombe sur le mode local (résumé factuel).
 
 import json
 
+from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
+from app.schemas.agent_tools import (
+    GetCashflowForecastParams,
+    GetKpisParams,
+    GetRfmSegmentsParams,
+    GetSalesForecastParams,
+    GetStockAlertsParams,
+)
 from app.schemas.client import ClientRFM
 from app.services import analytics_service, forecasting_service, llm_client, marketing_service
 
@@ -101,31 +109,54 @@ TOOLS_ANTHROPIC = [
 MAX_TOURS_OUTILS = 5  # garde-fou anti-boucle si le LLM s'entête à rappeler des outils (tâche #8)
 
 
+_MODELES_PARAMETRES_OUTILS = {
+    "get_kpis": GetKpisParams,
+    "get_sales_forecast": GetSalesForecastParams,
+    "get_cashflow_forecast": GetCashflowForecastParams,
+    "get_rfm_segments": GetRfmSegmentsParams,
+    "get_stock_alerts": GetStockAlertsParams,
+}
+
+
 def _executer_outil(nom: str, params: dict, db: Session):
     """Tâche #7 — exécute réellement l'outil demandé par le LLM en appelant
     le service métier correspondant (déjà écrit et testé en Semaine 1) :
     AUCUNE nouvelle logique métier ici, uniquement l'exposition en outil.
-    Lève ValueError sur nom d'outil inconnu — capturé par l'appelant."""
+
+    Tâche #8 — les paramètres reçus sont d'abord validés (bornes, type,
+    valeurs autorisées) via les modèles Pydantic de `app.schemas.agent_tools`
+    AVANT tout appel au service métier : un LLM peut envoyer n'importe
+    quoi (horizon démesuré, type inattendu), contrairement à un appel
+    direct à l'endpoint REST déjà protégé par FastAPI/Query.
+
+    Lève ValueError sur nom d'outil inconnu OU paramètres invalides —
+    capturé par l'appelant (`_repondre_avec_outils`), jamais de plantage,
+    l'erreur est renvoyée en texte clair au LLM plutôt qu'à l'utilisateur
+    brut."""
+    modele_parametres = _MODELES_PARAMETRES_OUTILS.get(nom)
+    if modele_parametres is None:
+        raise ValueError(f"outil inconnu : '{nom}'")
+    try:
+        p = modele_parametres.model_validate(params)
+    except ValidationError as exc:
+        premiere_erreur = exc.errors()[0]
+        champ = ".".join(str(x) for x in premiere_erreur["loc"]) or "(paramètre)"
+        raise ValueError(f"paramètre invalide pour '{nom}' — {champ} : {premiere_erreur['msg']}") from exc
+
     if nom == "get_kpis":
         return analytics_service.get_kpis_globaux(db)
     if nom == "get_sales_forecast":
-        return forecasting_service.get_previsions_ventes(
-            db, horizon_jours=params.get("horizon_jours", 30), modele=params.get("modele", "prophet")
-        )
+        return forecasting_service.get_previsions_ventes(db, horizon_jours=p.horizon_jours, modele=p.modele)
     if nom == "get_cashflow_forecast":
-        horizon = params.get("horizon_jours", 45)
-        modele = params.get("modele", "prophet")
-        prevision = forecasting_service.get_previsions_tresorerie(db, horizon, modele)
-        alerte = analytics_service.get_alerte_tresorerie(prevision, horizon, params.get("seuil_critique", 0.0))
+        prevision = forecasting_service.get_previsions_tresorerie(db, p.horizon_jours, p.modele)
+        alerte = analytics_service.get_alerte_tresorerie(prevision, p.horizon_jours, p.seuil_critique)
         return {"prevision": prevision, "alerte": alerte}
     if nom == "get_rfm_segments":
-        clients = marketing_service.list_clients_rfm(
-            db, segment=params.get("segment"), limit=params.get("limit", 200)
-        )
+        clients = marketing_service.list_clients_rfm(db, segment=p.segment, limit=p.limit)
         return [ClientRFM.model_validate(c).model_dump(mode="json") for c in clients]
     if nom == "get_stock_alerts":
         return analytics_service.get_stock_alertes(db)
-    raise ValueError(f"outil inconnu : '{nom}'")
+    raise ValueError(f"outil inconnu : '{nom}'")  # inatteignable (couvert par le dict ci-dessus), filet de sécurité
 
 
 def _repondre_avec_outils(db: Session, fournisseur: str, question: str) -> dict:
