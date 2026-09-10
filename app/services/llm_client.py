@@ -40,6 +40,16 @@ _FOURNISSEURS_PRIORITE: list[tuple[str, str, str]] = [
     ("OPENROUTER_API_KEY", "openrouter", "meta-llama/llama-3.1-8b-instruct:free"),
 ]
 
+# Tâche #6 de la roadmap de clôture — fournisseurs pour lesquels le
+# tool-calling est implémenté ci-dessous. Volontairement limité à
+# Anthropic dans ce périmètre (le fournisseur prioritaire de la liste
+# ci-dessus) : les autres fournisseurs restent utilisables pour le chat
+# SANS outils (`generate_completion`), et `copilot_service` (tâche #7)
+# doit vérifier `supports_tool_calling(fournisseur)` avant d'appeler
+# `generate_completion_with_tools` — sinon repli sur le mode local, jamais
+# d'exception laissée remonter pour un fournisseur non supporté.
+_FOURNISSEURS_TOOL_CALLING = {"anthropic"}
+
 _URLS_COMPATIBLES_OPENAI = {
     "openai": "https://api.openai.com/v1/chat/completions",
     "groq": "https://api.groq.com/openai/v1/chat/completions",
@@ -74,6 +84,102 @@ def resolve_provider() -> tuple[str, str, str] | None:
 
     return None
 
+def supports_tool_calling(fournisseur: str) -> bool:
+    """Tâche #6 — `copilot_service` (tâche #7) appelle ceci AVANT
+    `generate_completion_with_tools` pour décider s'il peut tenter le
+    tool-calling ou doit rester sur `generate_completion` (chat simple)."""
+    return fournisseur in _FOURNISSEURS_TOOL_CALLING
+
+
+def generate_completion_with_tools(
+    system_prompt: str,
+    messages: list[dict],
+    tools: list[dict],
+) -> dict:
+    """Tâche #6 — variante de `generate_completion` qui transmet la liste
+    d'outils au fournisseur et restitue la réponse SANS l'interpréter :
+    exécuter l'outil demandé et boucler est la responsabilité de
+    `copilot_service` (tâche #7), pas de ce module.
+
+    `messages` : historique au format Anthropic — `[{"role": "user"|"assistant",
+    "content": str | list[bloc]}]`. Pour renvoyer un résultat d'outil,
+    ajouter un message `{"role": "user", "content": [{"type": "tool_result",
+    "tool_use_id": ..., "content": <résultat en texte>}]}` (cf. tâche #7).
+
+    `tools` : `[{"name": str, "description": str, "input_schema": <JSON Schema>}]`
+    (format Anthropic natif — c'est le seul fournisseur supporté ici, cf.
+    `_FOURNISSEURS_TOOL_CALLING`).
+
+    Retourne `{"stop_reason": "tool_use" | "end_turn" | ..., "text": str |
+    None, "tool_calls": [{"id": str, "name": str, "input": dict}],
+    "assistant_content": list[dict]}` — `assistant_content` est le bloc
+    `content` brut renvoyé par Anthropic, à repasser TEL QUEL dans le
+    prochain message `{"role": "assistant", "content": assistant_content}`
+    de l'historique (exigence de l'API Anthropic : le tour assistant
+    contenant une demande d'outil doit être rejoué identique avant le
+    `tool_result` qui y répond).
+
+    Lève `LLMError` si le fournisseur résolu ne supporte pas le
+    tool-calling — l'appelant doit avoir vérifié `supports_tool_calling`
+    avant, ceci est un garde-fou de dernier recours, pas le mécanisme de
+    repli principal."""
+    resolu = resolve_provider()
+    if resolu is None:
+        raise LLMError("Aucun fournisseur LLM configuré (aucune clé API trouvée).")
+    fournisseur, cle_api, modele = resolu
+
+    if fournisseur not in _FOURNISSEURS_TOOL_CALLING:
+        raise LLMError(
+            f"le fournisseur '{fournisseur}' ne supporte pas le tool-calling dans cette "
+            "intégration — vérifier supports_tool_calling() avant d'appeler cette fonction."
+        )
+
+    try:
+        return _appel_anthropic_avec_outils(cle_api, modele, system_prompt, messages, tools)
+    except LLMError:
+        raise
+    except httpx.HTTPError as exc:
+        raise LLMError(f"erreur réseau vers {fournisseur} ({exc})") from exc
+    except (KeyError, IndexError, TypeError, ValueError) as exc:
+        raise LLMError(f"réponse inattendue de {fournisseur} ({exc})") from exc
+
+
+def _appel_anthropic_avec_outils(
+    cle_api: str, modele: str, system_prompt: str, messages: list[dict], tools: list[dict]
+) -> dict:
+    reponse = httpx.post(
+        "https://api.anthropic.com/v1/messages",
+        headers={
+            "x-api-key": cle_api,
+            "anthropic-version": "2023-06-01",
+            "content-type": "application/json",
+        },
+        json={
+            "model": modele,
+            "max_tokens": MAX_TOKENS_REPONSE,
+            "system": system_prompt,
+            "messages": messages,
+            "tools": tools,
+        },
+        timeout=TIMEOUT_SECONDES,
+    )
+    _lever_si_erreur_http(reponse, "anthropic")
+    data = reponse.json()
+    contenu = data["content"]
+
+    blocs_texte = [b["text"] for b in contenu if b.get("type") == "text"]
+    appels_outils = [
+        {"id": b["id"], "name": b["name"], "input": b["input"]}
+        for b in contenu
+        if b.get("type") == "tool_use"
+    ]
+
+    return {
+        "stop_reason": data.get("stop_reason"),
+        "text": "\n".join(blocs_texte).strip() if blocs_texte else None,
+        "tool_calls": appels_outils,
+        "assistant_content": contenu,
+    }
 
 def generate_completion(system_prompt: str, user_message: str) -> str:
     """Appelle le fournisseur LLM configuré et retourne le texte généré.
