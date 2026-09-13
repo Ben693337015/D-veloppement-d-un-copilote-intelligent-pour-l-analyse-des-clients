@@ -150,9 +150,7 @@ def generate_completion_with_tools(
     modele_effectif = _MODELE_TOOL_CALLING_PAR_FOURNISSEUR.get(fournisseur, modele)
 
     try:
-        if fournisseur == "anthropic":
-            return _appel_anthropic_avec_outils(cle_api, modele_effectif, system_prompt, messages, tools)
-        return _appel_groq_avec_outils(cle_api, modele_effectif, system_prompt, messages, tools)
+        return _appel_avec_retry_reseau(fournisseur, cle_api, modele_effectif, system_prompt, messages, tools)
     except LLMError:
         raise
     except httpx.HTTPError as exc:
@@ -160,6 +158,23 @@ def generate_completion_with_tools(
     except (KeyError, IndexError, TypeError, ValueError) as exc:
         raise LLMError(f"réponse inattendue de {fournisseur} ({exc})") from exc
 
+
+def _appel_avec_retry_reseau(
+    fournisseur: str, cle_api: str, modele: str, system_prompt: str, messages: list[dict], tools: list[dict]
+) -> dict:
+    """Une seule nouvelle tentative en cas de coupure réseau TRANSITOIRE
+    (ex. 'Server disconnected without sending a response', observé en
+    conditions réelles avec Groq) — jamais de retry sur un 4xx/5xx explicite
+    du fournisseur (déjà converti en `LLMError` par `_lever_si_erreur_http`,
+    donc jamais intercepté ici) : retenter immédiatement contre un vrai 429
+    (quota tokens/minute dépassé) échouerait très probablement de nouveau
+    et gaspillerait un appel supplémentaire contre ce même quota."""
+    appel = _appel_anthropic_avec_outils if fournisseur == "anthropic" else _appel_groq_avec_outils
+    try:
+        return appel(cle_api, modele, system_prompt, messages, tools)
+    except httpx.HTTPError:
+        return appel(cle_api, modele, system_prompt, messages, tools)
+    
 def _appel_anthropic_avec_outils(
     cle_api: str, modele: str, system_prompt: str, messages: list[dict], tools: list[dict]
 ) -> dict:

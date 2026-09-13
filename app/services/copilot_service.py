@@ -53,8 +53,13 @@ SYSTEM_PROMPT_OUTILS = (
     "— UTILISE-LES pour toute question portant sur des chiffres ou des données de "
     "l'entreprise plutôt que d'inventer une réponse. N'appelle PAS d'outil pour une "
     "question générale qui n'en a pas besoin (salutation, question sur ton "
-    "fonctionnement, etc.)."
+    "fonctionnement, etc.). Si l'utilisateur mentionne un \"souci\" ou un "
+    "\"problème\" sans préciser lequel, comprends-le par défaut comme une "
+    "question sur l'activité de son ENTREPRISE (ventes, trésorerie, stocks, "
+    "clients) — pas sur ton propre fonctionnement technique — sauf s'il est "
+    "explicitement question de toi ou de l'application."
 )
+
 
 # Tâche #4 (AGENT_TOOLS.md) traduite au format Anthropic natif — un outil par
 # endpoint backend déjà livré et testé en Semaine 1, aucune nouvelle logique
@@ -108,6 +113,47 @@ TOOLS_ANTHROPIC = [
 
 MAX_TOURS_OUTILS = 5  # garde-fou anti-boucle si le LLM s'entête à rappeler des outils (tâche #8)
 
+def _condenser_prevision(prevision: dict, max_points: int = 8) -> dict:
+    """Réduit la taille d'une prévision (ventes ou trésorerie) avant de
+    l'envoyer au LLM : au-delà de `max_points` jours, ne garder que les
+    premiers/derniers points + des statistiques agrégées sur la série
+    complète, plutôt que tous les points bruts. Réduit sensiblement la
+    consommation de tokens (le quota gratuit Groq est limité en tokens/
+    minute) sans perdre l'information utile pour répondre à l'utilisateur.
+    N'affecte QUE ce qui est envoyé au LLM — l'endpoint REST direct
+    (`GET /analytics/forecast/sales`) continue de renvoyer tous les points."""
+    points = prevision.get("points", [])
+    if len(points) <= max_points:
+        return prevision
+
+    valeurs = [p["valeur_prevue"] for p in points]
+    i_min, i_max = valeurs.index(min(valeurs)), valeurs.index(max(valeurs))
+    n_premiers = max_points // 2
+    n_derniers = max_points - n_premiers
+
+    resume = dict(prevision)
+    resume["points"] = points[:n_premiers] + points[-n_derniers:]
+    resume["points_omis_pour_concision"] = len(points) - max_points
+    resume["statistiques_serie_complete"] = {
+        "valeur_min": valeurs[i_min],
+        "date_min": points[i_min]["date_prevision"],
+        "valeur_max": valeurs[i_max],
+        "date_max": points[i_max]["date_prevision"],
+        "valeur_moyenne": sum(valeurs) / len(valeurs),
+    }
+    return resume
+
+
+def _condenser_liste(nom_cle_echantillon: str, elements: list, max_elements: int = 15) -> list | dict:
+    """Même principe que `_condenser_prevision`, pour une liste d'objets
+    (clients RFM, alertes stock) potentiellement longue."""
+    if len(elements) <= max_elements:
+        return elements
+    return {
+        nom_cle_echantillon: elements[:max_elements],
+        "n_total": len(elements),
+        "elements_omis_pour_concision": len(elements) - max_elements,
+    }
 
 _MODELES_PARAMETRES_OUTILS = {
     "get_kpis": GetKpisParams,
@@ -146,18 +192,19 @@ def _executer_outil(nom: str, params: dict, db: Session):
     if nom == "get_kpis":
         return analytics_service.get_kpis_globaux(db)
     if nom == "get_sales_forecast":
-        return forecasting_service.get_previsions_ventes(db, horizon_jours=p.horizon_jours, modele=p.modele)
+        resultat = forecasting_service.get_previsions_ventes(db, horizon_jours=p.horizon_jours, modele=p.modele)
+        return _condenser_prevision(resultat)
     if nom == "get_cashflow_forecast":
         prevision = forecasting_service.get_previsions_tresorerie(db, p.horizon_jours, p.modele)
         alerte = analytics_service.get_alerte_tresorerie(prevision, p.horizon_jours, p.seuil_critique)
-        return {"prevision": prevision, "alerte": alerte}
+        return {"prevision": _condenser_prevision(prevision), "alerte": alerte}
     if nom == "get_rfm_segments":
         clients = marketing_service.list_clients_rfm(db, segment=p.segment, limit=p.limit)
-        return [ClientRFM.model_validate(c).model_dump(mode="json") for c in clients]
+        clients_json = [ClientRFM.model_validate(c).model_dump(mode="json") for c in clients]
+        return _condenser_liste("clients_echantillon", clients_json)
     if nom == "get_stock_alerts":
-        return analytics_service.get_stock_alertes(db)
+        return _condenser_liste("alertes_echantillon", analytics_service.get_stock_alertes(db))
     raise ValueError(f"outil inconnu : '{nom}'")  # inatteignable (couvert par le dict ci-dessus), filet de sécurité
-
 
 def _repondre_avec_outils(db: Session, fournisseur: str, question: str) -> dict:
     """Tâche #7 — boucle d'exécution complète : demande d'outil du LLM ->
