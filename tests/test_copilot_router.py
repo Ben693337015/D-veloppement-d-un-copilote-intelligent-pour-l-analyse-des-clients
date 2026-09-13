@@ -3,7 +3,7 @@ from app.models import Client, StockProduit
 from app.services import copilot_service, llm_client
 
 
-def test_chat_local_mode_returns_context_snapshot(client, db_session):
+def test_chat_local_mode_returns_context_snapshot(client, db_session, sans_cle_llm):
     resp = client.post("/api/v1/copilot/chat", json={"question": "Quel est le CA total ?"})
     assert resp.status_code == 200
     body = resp.json()
@@ -12,7 +12,7 @@ def test_chat_local_mode_returns_context_snapshot(client, db_session):
     assert body["sources"] == ["analytics_service", "marketing_service"]
 
 
-def test_chat_reflects_actual_database_state(client, db_session):
+def test_chat_reflects_actual_database_state(client, db_session, sans_cle_llm):
     db_session.add(
         Client(code_client_externe="C1", segment_rfm="Fidèle", montant_total=500.0, score_churn=0.1)
     )
@@ -28,7 +28,7 @@ def test_chat_reflects_actual_database_state(client, db_session):
     assert "Segment Fidèle: 1 clients" in reponse
 
 
-def test_chat_empty_database_does_not_crash(client):
+def test_chat_empty_database_does_not_crash(client, sans_cle_llm):
     resp = client.post("/api/v1/copilot/chat", json={"question": "Combien de clients ?"})
     assert resp.status_code == 200
     assert "Clients: 0" in resp.json()["reponse"]

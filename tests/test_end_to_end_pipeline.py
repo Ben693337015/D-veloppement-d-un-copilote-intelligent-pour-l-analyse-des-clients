@@ -130,7 +130,7 @@ def _generer_tresorerie_csv() -> bytes:
 
 # ── TEST BOUT-EN-BOUT ─────────────────────────────────────────────────────
 
-def test_full_pipeline_simulated_pme_dataset(client, db_session):
+def test_full_pipeline_simulated_pme_dataset(client, db_session, sans_cle_llm):
     # ── 1. Import des transactions (mapping explicite, colonnes non-Online Retail II) ──
     mapping_transactions = {
         "date_col": "Date Operation",

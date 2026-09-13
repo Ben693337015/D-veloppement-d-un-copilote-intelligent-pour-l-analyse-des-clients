@@ -24,6 +24,8 @@ dans ce fichier (une LLM_API_KEY mal configurée provoquait un 500 brut).
 
 from __future__ import annotations
 
+import json
+
 import httpx
 
 from app.core.config import settings
@@ -35,7 +37,10 @@ MAX_TOKENS_REPONSE = 500
 _FOURNISSEURS_PRIORITE: list[tuple[str, str, str]] = [
     ("ANTHROPIC_API_KEY", "anthropic", "claude-3-5-haiku-latest"),
     ("OPENAI_API_KEY", "openai", "gpt-4o-mini"),
-    ("GROQ_API_KEY", "groq", "llama-3.1-8b-instant"),
+    # llama-3.1-8b-instant a été définitivement retiré par Groq le
+    # 16/08/2026 (annonce du 17/06/2026) ; openai/gpt-oss-20b est le
+    # remplacement recommandé par Groq lui-même (cf. console.groq.com/docs/deprecations).
+    ("GROQ_API_KEY", "groq", "openai/gpt-oss-20b"),
     ("GOOGLE_API_KEY", "google", "gemini-1.5-flash"),
     ("OPENROUTER_API_KEY", "openrouter", "meta-llama/llama-3.1-8b-instruct:free"),
 ]
@@ -48,8 +53,16 @@ _FOURNISSEURS_PRIORITE: list[tuple[str, str, str]] = [
 # doit vérifier `supports_tool_calling(fournisseur)` avant d'appeler
 # `generate_completion_with_tools` — sinon repli sur le mode local, jamais
 # d'exception laissée remonter pour un fournisseur non supporté.
-_FOURNISSEURS_TOOL_CALLING = {"anthropic"}
+_FOURNISSEURS_TOOL_CALLING = {"anthropic", "groq"}
 
+# Le modèle par défaut de _FOURNISSEURS_PRIORITE pour Groq
+# (openai/gpt-oss-20b) privilégie la vitesse, pas la fiabilité du tool
+# use agentique. On force un modèle plus grand, documenté par Groq
+# lui-même comme fiable pour le function calling (utilisé par leur
+# propre système "Compound", cf. console.groq.com/docs/compound),
+# UNIQUEMENT pour le mode agent — le chat simple (`generate_completion`)
+# garde le modèle rapide par défaut.
+_MODELE_TOOL_CALLING_PAR_FOURNISSEUR = {"groq": "openai/gpt-oss-120b"}
 _URLS_COMPATIBLES_OPENAI = {
     "openai": "https://api.openai.com/v1/chat/completions",
     "groq": "https://api.groq.com/openai/v1/chat/completions",
@@ -134,15 +147,18 @@ def generate_completion_with_tools(
             "intégration — vérifier supports_tool_calling() avant d'appeler cette fonction."
         )
 
+    modele_effectif = _MODELE_TOOL_CALLING_PAR_FOURNISSEUR.get(fournisseur, modele)
+
     try:
-        return _appel_anthropic_avec_outils(cle_api, modele, system_prompt, messages, tools)
+        if fournisseur == "anthropic":
+            return _appel_anthropic_avec_outils(cle_api, modele_effectif, system_prompt, messages, tools)
+        return _appel_groq_avec_outils(cle_api, modele_effectif, system_prompt, messages, tools)
     except LLMError:
         raise
     except httpx.HTTPError as exc:
         raise LLMError(f"erreur réseau vers {fournisseur} ({exc})") from exc
     except (KeyError, IndexError, TypeError, ValueError) as exc:
         raise LLMError(f"réponse inattendue de {fournisseur} ({exc})") from exc
-
 
 def _appel_anthropic_avec_outils(
     cle_api: str, modele: str, system_prompt: str, messages: list[dict], tools: list[dict]
@@ -179,6 +195,100 @@ def _appel_anthropic_avec_outils(
         "text": "\n".join(blocs_texte).strip() if blocs_texte else None,
         "tool_calls": appels_outils,
         "assistant_content": contenu,
+    }
+
+# --- Groq (API compatible OpenAI, format tool-calling différent d'Anthropic) ---
+#
+# Le protocole interne de `messages`/`tools` échangé avec `copilot_service`
+# reste au format Anthropic partout (déjà écrit, testé — tâches #6/#7) :
+# les deux fonctions ci-dessous font toute la traduction aller-retour vers
+# le format OpenAI-compatible attendu par Groq, en frontière de ce module.
+# `copilot_service.py` ne sait pas quel fournisseur répond et n'a AUCUNE
+# modification à faire pour gérer un second fournisseur de tool-calling.
+
+
+def _tools_anthropic_vers_openai(tools: list[dict]) -> list[dict]:
+    return [
+        {
+            "type": "function",
+            "function": {"name": t["name"], "description": t["description"], "parameters": t["input_schema"]},
+        }
+        for t in tools
+    ]
+
+
+def _messages_anthropic_vers_openai(messages: list[dict]) -> list[dict]:
+    convertis = []
+    for msg in messages:
+        contenu = msg["content"]
+        if isinstance(contenu, str):
+            convertis.append({"role": msg["role"], "content": contenu})
+            continue
+        if msg["role"] == "assistant":
+            texte = None
+            tool_calls = []
+            for bloc in contenu:
+                if bloc["type"] == "text":
+                    texte = bloc["text"]
+                elif bloc["type"] == "tool_use":
+                    tool_calls.append(
+                        {
+                            "id": bloc["id"],
+                            "type": "function",
+                            "function": {"name": bloc["name"], "arguments": json.dumps(bloc["input"], ensure_ascii=False)},
+                        }
+                    )
+            message_openai = {"role": "assistant", "content": texte}
+            if tool_calls:
+                message_openai["tool_calls"] = tool_calls
+            convertis.append(message_openai)
+        else:
+            # Message utilisateur portant un ou plusieurs tool_result
+            # (format Anthropic) -> chaque tool_result devient son PROPRE
+            # message top-level {"role": "tool", ...} en format OpenAI.
+            for bloc in contenu:
+                convertis.append({"role": "tool", "tool_call_id": bloc["tool_use_id"], "content": bloc["content"]})
+    return convertis
+
+
+def _appel_groq_avec_outils(
+    cle_api: str, modele: str, system_prompt: str, messages: list[dict], tools: list[dict]
+) -> dict:
+    payload_messages = [{"role": "system", "content": system_prompt}] + _messages_anthropic_vers_openai(messages)
+
+    reponse = httpx.post(
+        "https://api.groq.com/openai/v1/chat/completions",
+        headers={"Authorization": f"Bearer {cle_api}", "Content-Type": "application/json"},
+        json={
+            "model": modele,
+            "messages": payload_messages,
+            "tools": _tools_anthropic_vers_openai(tools),
+            "tool_choice": "auto",
+        },
+        timeout=TIMEOUT_SECONDES,
+    )
+    _lever_si_erreur_http(reponse, "groq")
+    data = reponse.json()
+    message = data["choices"][0]["message"]
+    finish_reason = data["choices"][0]["finish_reason"]
+
+    tool_calls_bruts = message.get("tool_calls") or []
+    appels_outils = [
+        {"id": tc["id"], "name": tc["function"]["name"], "input": json.loads(tc["function"]["arguments"])}
+        for tc in tool_calls_bruts
+    ]
+
+    blocs_assistant = []
+    if message.get("content"):
+        blocs_assistant.append({"type": "text", "text": message["content"]})
+    for appel in appels_outils:
+        blocs_assistant.append({"type": "tool_use", "id": appel["id"], "name": appel["name"], "input": appel["input"]})
+
+    return {
+        "stop_reason": "tool_use" if finish_reason == "tool_calls" else finish_reason,
+        "text": message.get("content"),
+        "tool_calls": appels_outils,
+        "assistant_content": blocs_assistant,
     }
 
 def generate_completion(system_prompt: str, user_message: str) -> str:
