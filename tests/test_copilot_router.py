@@ -5,7 +5,7 @@ from app.models import Client, StockProduit
 from app.services import copilot_service, llm_client
 
 
-def test_chat_local_mode_returns_context_snapshot(client, db_session):
+def test_chat_local_mode_returns_context_snapshot(client, db_session, sans_cle_llm):
     resp = client.post("/api/v1/copilot/chat", json={"question": "Quel est le CA total ?"})
     assert resp.status_code == 200
     body = resp.json()
@@ -14,7 +14,7 @@ def test_chat_local_mode_returns_context_snapshot(client, db_session):
     assert body["sources"] == ["analytics_service", "marketing_service", "forecasting_service"]
 
 
-def test_chat_reflects_actual_database_state(client, db_session):
+def test_chat_reflects_actual_database_state(client, db_session, sans_cle_llm):
     db_session.add(
         Client(code_client_externe="C1", segment_rfm="Fidèle", montant_total=500.0, score_churn=0.1)
     )
@@ -30,7 +30,7 @@ def test_chat_reflects_actual_database_state(client, db_session):
     assert "Segment Fidèle: 1 clients" in reponse
 
 
-def test_chat_empty_database_does_not_crash(client):
+def test_chat_empty_database_does_not_crash(client, sans_cle_llm):
     resp = client.post("/api/v1/copilot/chat", json={"question": "Combien de clients ?"})
     assert resp.status_code == 200
     assert "Clients: 0" in resp.json()["reponse"]
@@ -139,11 +139,19 @@ def test_resolve_provider_falls_back_to_generic_llm_api_key_as_anthropic(monkeyp
 
 
 def test_chat_uses_llm_when_provider_configured(client, db_session, monkeypatch):
+    """Depuis la tâche #6, Anthropic configuré passe par
+    `generate_completion_with_tools` (mode agent) et non plus
+    `generate_completion` (chat simple) — cf. `llm_client.supports_tool_calling`."""
     monkeypatch.setattr(settings, "ANTHROPIC_API_KEY", "sk-ant-test")
     monkeypatch.setattr(
         copilot_service.llm_client,
-        "generate_completion",
-        lambda system_prompt, user_message: "Réponse générée par le LLM.",
+        "generate_completion_with_tools",
+        lambda system_prompt, messages, tools: {
+            "stop_reason": "end_turn",
+            "text": "Réponse générée par le LLM.",
+            "tool_calls": [],
+            "assistant_content": [{"type": "text", "text": "Réponse générée par le LLM."}],
+        },
     )
 
     resp = client.post("/api/v1/copilot/chat", json={"question": "Quel est le CA ?"})
@@ -151,7 +159,6 @@ def test_chat_uses_llm_when_provider_configured(client, db_session, monkeypatch)
     body = resp.json()
     assert body["reponse"] == "Réponse générée par le LLM."
     assert "llm:anthropic" in body["sources"]
-
 
 def test_chat_never_crashes_when_llm_call_fails(client, db_session, monkeypatch):
     """BUG HISTORIQUE CORRIGÉ (verrouillé pour l'intégration réelle) : un

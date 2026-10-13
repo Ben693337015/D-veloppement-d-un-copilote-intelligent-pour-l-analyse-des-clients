@@ -1,0 +1,113 @@
+{
+  "description": "Golden dataset du copilote (tâche #9 roadmap de clôture) — jeu de questions/réponses de référence pour démontrer objectivement au jury que l'agent appelle le bon outil (tâche #6/#7) et ne force pas un appel inutile. Champ 'outil_attendu' = null signifie qu'aucun appel d'outil n'est attendu pour cette question.",
+  "cas": [
+    {
+      "id": "Q01",
+      "question": "Combien j'ai de clients actuellement ?",
+      "outil_attendu": "get_kpis",
+      "parametres_attendus": {},
+      "categorie": "kpis"
+    },
+    {
+      "id": "Q02",
+      "question": "Fais-moi un résumé rapide de la situation de mon entreprise.",
+      "outil_attendu": "get_kpis",
+      "parametres_attendus": {},
+      "categorie": "kpis"
+    },
+    {
+      "id": "Q03",
+      "question": "Combien vais-je vendre le mois prochain ?",
+      "outil_attendu": "get_sales_forecast",
+      "parametres_attendus": {"horizon_jours": 30},
+      "categorie": "ventes"
+    },
+    {
+      "id": "Q04",
+      "question": "Pourquoi la prévision de ventes est-elle plus haute la semaine prochaine ? Quelles variables l'expliquent ?",
+      "outil_attendu": "get_sales_forecast",
+      "parametres_attendus": {"modele": "xgboost"},
+      "categorie": "ventes",
+      "note": "Doit préférer modele=xgboost pour obtenir le champ explicabilite non vide (tâche #3)."
+    },
+    {
+      "id": "Q05",
+      "question": "Quelle est ma prévision de ventes sur les 90 prochains jours ?",
+      "outil_attendu": "get_sales_forecast",
+      "parametres_attendus": {"horizon_jours": 90},
+      "categorie": "ventes"
+    },
+    {
+      "id": "Q06",
+      "question": "Quel est mon risque de trésorerie à 45 jours ?",
+      "outil_attendu": "get_cashflow_forecast",
+      "parametres_attendus": {"horizon_jours": 45},
+      "categorie": "tresorerie"
+    },
+    {
+      "id": "Q07",
+      "question": "Est-ce que je risque d'être à découvert dans les deux prochains mois ?",
+      "outil_attendu": "get_cashflow_forecast",
+      "parametres_attendus": {"horizon_jours": 60},
+      "categorie": "tresorerie"
+    },
+    {
+      "id": "Q08",
+      "question": "Ma trésorerie va-t-elle rester positive d'ici la fin du mois ?",
+      "outil_attendu": "get_cashflow_forecast",
+      "parametres_attendus": {"horizon_jours": 30},
+      "categorie": "tresorerie"
+    },
+    {
+      "id": "Q09",
+      "question": "Quels sont mes clients à risque de partir ?",
+      "outil_attendu": "get_rfm_segments",
+      "parametres_attendus": {"segment": "À risque"},
+      "categorie": "marketing"
+    },
+    {
+      "id": "Q10",
+      "question": "Qui sont mes meilleurs clients ?",
+      "outil_attendu": "get_rfm_segments",
+      "parametres_attendus": {"segment": "Champions"},
+      "categorie": "marketing"
+    },
+    {
+      "id": "Q11",
+      "question": "Qu'est-ce qu'il faut réapprovisionner en priorité ?",
+      "outil_attendu": "get_stock_alerts",
+      "parametres_attendus": {},
+      "categorie": "stock"
+    },
+    {
+      "id": "Q12",
+      "question": "Y a-t-il des produits en rupture ou presque en rupture de stock ?",
+      "outil_attendu": "get_stock_alerts",
+      "parametres_attendus": {},
+      "categorie": "stock"
+    },
+    {
+      "id": "Q13",
+      "question": "Bonjour, comment tu t'appelles et à quoi tu sers ?",
+      "outil_attendu": null,
+      "parametres_attendus": null,
+      "categorie": "sans_outil",
+      "note": "Question générale sur le copilote lui-même, aucune donnée entreprise nécessaire."
+    },
+    {
+      "id": "Q14",
+      "question": "Merci pour ton aide !",
+      "outil_attendu": null,
+      "parametres_attendus": null,
+      "categorie": "sans_outil"
+    },
+    {
+      "id": "Q15",
+      "question": "Qu'est-ce que le RFM en marketing, en général ?",
+      "outil_attendu": null,
+      "parametres_attendus": null,
+      "categorie": "sans_outil",
+      "note": "Question de culture générale sur une méthode, pas sur les données réelles de l'entreprise — l'agent ne doit pas forcer un appel à get_rfm_segments ici."
+    }
+  ]
+}

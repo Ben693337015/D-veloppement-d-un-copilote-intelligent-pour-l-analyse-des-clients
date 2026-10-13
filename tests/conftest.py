@@ -92,3 +92,24 @@ def client_sans_auth(db_session):
     with TestClient(app) as test_client:
         yield test_client
     app.dependency_overrides.clear()
+
+
+@pytest.fixture(scope="function")
+def sans_cle_llm(monkeypatch):
+    """Force le mode local du copilote quel que soit le contenu réel de
+    `.env` (ex. une vraie clé Groq/Anthropic configurée pour des tests
+    manuels) — isole les tests qui vérifient spécifiquement le repli local
+    de l'état ambiant de l'environnement, qui ne doit jamais influencer un
+    résultat de test automatisé."""
+    from app.core.config import settings
+
+    for nom in (
+        "ANTHROPIC_API_KEY",
+        "OPENAI_API_KEY",
+        "GROQ_API_KEY",
+        "GOOGLE_API_KEY",
+        "OPENROUTER_API_KEY",
+        "LLM_API_KEY",
+        "LLM_PROVIDER",
+    ):
+        monkeypatch.setattr(settings, nom, None, raising=False)

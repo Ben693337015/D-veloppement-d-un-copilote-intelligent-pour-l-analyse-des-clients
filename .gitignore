@@ -1,0 +1,26 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# --- Secrets locaux (jamais commités) ---
+.env
+
+# --- Données volumineuses téléchargées localement ---
+data/raw/*
+data/processed/*
+!data/raw/.gitkeep
+!data/processed/.gitkeep
+
+# --- Frontend (Node) ---
+frontend/node_modules/
+frontend/dist/
+
+# --- Éditeurs / OS ---
+.vscode/
+.idea/
+.DS_Store

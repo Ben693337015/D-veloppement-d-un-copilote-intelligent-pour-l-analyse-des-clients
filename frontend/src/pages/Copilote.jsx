@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { poserQuestion } from "../api/client";
 import { PageHeader } from "../components/ui/PageHeader";
 import { Spinner } from "../components/ui/Spinner";
@@ -38,7 +40,7 @@ export function Copilote() {
         icon={IconChat}
         eyebrow="Module mutualisé"
         title="Assistant Copilote"
-        subtitle="Répond à partir des indicateurs réels des deux modules. L'intégration d'un LLM génératif est un chantier de Phase 5 — en attendant, les réponses restent une synthèse factuelle fiable."
+        subtitle="Répond à partir des indicateurs réels des deux modules, en appelant directement les APIs de prévision, trésorerie, stocks et segmentation."
       />
 
       <div className="flex flex-1 flex-col overflow-hidden rounded-2xl border border-line bg-surface shadow-[var(--shadow-card)]">
@@ -55,13 +57,17 @@ export function Copilote() {
           {messages.map((m, i) => (
             <div key={i} className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}>
               <div
-                className={`max-w-[85%] whitespace-pre-wrap rounded-2xl px-4 py-3 text-sm leading-relaxed ${
+                className={`max-w-[85%] rounded-2xl px-4 py-3 text-sm leading-relaxed ${
                   m.role === "user"
-                    ? "bg-brand text-white"
-                    : "border border-line bg-paper text-ink"
+                    ? "whitespace-pre-wrap bg-brand text-white"
+                    : "border border-line bg-paper text-ink [&_p]:mb-2 [&_p:last-child]:mb-0 [&_strong]:font-semibold [&_ul]:list-disc [&_ul]:pl-5 [&_ol]:list-decimal [&_ol]:pl-5 [&_table]:my-2 [&_table]:w-full [&_table]:border-collapse [&_th]:border [&_th]:border-line [&_th]:bg-brand-light [&_th]:px-2 [&_th]:py-1 [&_th]:text-left [&_td]:border [&_td]:border-line [&_td]:px-2 [&_td]:py-1"
                 }`}
               >
-                {m.contenu}
+                {m.role === "assistant" ? (
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{m.contenu}</ReactMarkdown>
+                ) : (
+                  m.contenu
+                )}
               </div>
             </div>
           ))}
