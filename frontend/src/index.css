@@ -1,0 +1,120 @@
+@import "tailwindcss";
+
+/* ── Copilote IA PME — système de design ──────────────────────────────────
+   Palette : bleu profond (cohérent avec la couleur de marque déjà utilisée
+   dans les rapports PDF générés côté API) + accent ocre chaud, sur un fond
+   gris-neutre froid (volontairement PAS le crème/terracotta générique).
+   Typo : Manrope (titres/UI, caractère géométrique) + Inter (corps/texte,
+   très lisible en petite taille pour les tableaux) + IBM Plex Mono
+   (chiffres des indicateurs — donne un rendu "instrument de précision" aux
+   métriques, contraste avec les titres arrondis de Manrope).
+   Signature : le motif de l'anneau de loupe du logo (littéralement "trouver
+   le bon client dans la foule" = le principe même de la segmentation RFM)
+   est repris avec parcimonie : anneau fin autour du badge logo, des icônes
+   de KPI, des états de chargement. */
+
+@theme {
+  --font-display: "Manrope", ui-sans-serif, system-ui, sans-serif;
+  --font-body: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", monospace;
+
+  --color-ink: #101826;
+  --color-muted: #5b6478;
+  --color-paper: #f5f6f9;
+  --color-surface: #ffffff;
+  --color-line: #e3e7ee;
+
+  --color-brand: #2f5d8a;
+  --color-brand-dark: #1c3a57;
+  --color-brand-light: #eaf1f8;
+
+  --color-accent: #d98e3d;
+  --color-accent-dark: #b5701f;
+  --color-accent-light: #fbf1e3;
+
+  --color-success: #2f8f5b;
+  --color-success-bg: #e7f5ee;
+  --color-danger: #c1443c;
+  --color-danger-bg: #fbeae8;
+  --color-warning: #d98e3d;
+  --color-warning-bg: #fbf1e3;
+
+  --shadow-card: 0 1px 2px rgba(16, 24, 38, 0.04), 0 8px 24px -12px rgba(16, 24, 38, 0.12);
+  --shadow-pop: 0 12px 32px -8px rgba(16, 24, 38, 0.22);
+}
+
+html {
+  color-scheme: light;
+}
+
+body {
+  margin: 0;
+  background: var(--color-paper);
+  color: var(--color-ink);
+  font-family: var(--font-body);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
+#root {
+  min-height: 100svh;
+}
+
+h1, h2, h3, h4 {
+  font-family: var(--font-display);
+  letter-spacing: -0.01em;
+  color: var(--color-ink);
+}
+
+.font-tabular {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Focus clavier visible partout — jamais supprimé (accessibilité) */
+:focus-visible {
+  outline: 2px solid var(--color-brand);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+::selection {
+  background: var(--color-brand);
+  color: white;
+}
+
+/* Anneau "loupe" — signature réutilisée (badge logo, icônes KPI, spinners) */
+.focus-ring {
+  position: relative;
+}
+.focus-ring::after {
+  content: "";
+  position: absolute;
+  inset: -6px;
+  border-radius: 999px;
+  border: 1.5px solid color-mix(in srgb, var(--color-accent) 55%, transparent);
+  pointer-events: none;
+}
+
+@keyframes spin-slow {
+  to { transform: rotate(360deg); }
+}
+.animate-spin-slow {
+  animation: spin-slow 1.4s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* Scrollbars discrètes (Webkit) — cohérence visuelle sans être envahissant */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #cdd3de; border-radius: 999px; }
+::-webkit-scrollbar-thumb:hover { background: #b7bfcd; }

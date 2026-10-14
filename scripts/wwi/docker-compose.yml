@@ -1,0 +1,29 @@
+# SQL Server éphémère servant UNIQUEMENT à extraire Wide World Importers
+# (cf. app/ingestion/export_wwi.py). Indépendant du docker-compose principal :
+# l'application n'en a pas besoin pour fonctionner.
+#
+#   docker compose -f scripts/wwi/docker-compose.yml up -d
+#   python -m app.ingestion.export_wwi --telecharger
+#   docker compose -f scripts/wwi/docker-compose.yml down -v   # quand c'est fini
+#
+# Image amd64 : fonctionne sous Windows/Linux (Docker Desktop), pas sur Mac Apple Silicon
+# sans émulation Rosetta. Prévoir ~2 Go de RAM libres pour le conteneur.
+services:
+  mssql:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    container_name: copilote_wwi_mssql
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_PID: "Developer"
+      # Doit correspondre à --mot-de-passe de export_wwi.py (règles de complexité
+      # SQL Server : 8 caractères min., majuscule, minuscule, chiffre, symbole).
+      MSSQL_SA_PASSWORD: "Wwi_Export_2026!"
+    ports:
+      - "1433:1433"
+    volumes:
+      # Le .bak téléchargé par `export_wwi.py --telecharger` arrive dans data/raw/wwi/
+      - ../../data/raw/wwi:/var/opt/mssql/backup
+      - wwi_mssql_data:/var/opt/mssql
+
+volumes:
+  wwi_mssql_data:
