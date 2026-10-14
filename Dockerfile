@@ -62,30 +62,31 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install --default-timeout=120 --retries 10 --no-deps xgboost==2.1.1
 
-# Compile CmdStan UNE FOIS au moment du build de l'image (couche mise en
-# cache par Docker tant que requirements.txt ne change pas, donc jamais
-# reconstruite lors d'un simple changement de code applicatif — cf. l'ordre
-# des instructions COPY ci-dessous), plutôt que de laisser Prophet le faire
-# paresseusement au premier appel API en production — ce qui bloquerait la
-# première requête pendant plusieurs minutes et pourrait dépasser le
-# timeout du client.
-
-RUN python -c "import cmdstanpy; cmdstanpy.install_cmdstan(cores=2)"
-
-# BUG CONNU (prophet==1.1.5) : le package embarque sa propre copie locale de
-# CmdStan (prophet/stan_model/cmdstan-2.33.1), téléchargée séparément lors
-# du `pip install prophet` ci-dessus, INDÉPENDAMMENT de l'installation
-# globale ci-dessus. Si ce téléchargement est interrompu (souci réseau
-# pendant le build), le dossier existe mais est incomplet — et Prophet
-# l'utilise quand même en priorité (il vérifie seulement que le dossier
-# EXISTE, pas qu'il est complet, cf. prophet/models.py ligne 93), plutôt
-# que de se rabattre sur l'installation globale ci-dessus qui, elle,
-# fonctionne. On supprime donc systématiquement cette copie locale pour
-# forcer l'usage de l'installation globale vérifiée, et on fait échouer le
-# build immédiatement si Prophet ne parvient toujours pas à démarrer —
-# plutôt que de le découvrir en pleine démonstration.
+# CmdStan N'EST PAS compilé ici (étape supprimée) : `prophet==1.1.5` embarque
+# déjà son modèle Stan PRÉCOMPILÉ (prophet/stan_model/prophet_model.bin), que
+# cmdstanpy exécute directement — aucune installation globale de CmdStan n'est
+# nécessaire pour entraîner/prédire. L'ancienne étape
+# `cmdstanpy.install_cmdstan(cores=2)` téléchargeait CmdStan depuis GitHub puis
+# le compilait en C++ : 30 min à plus d'une heure sur une machine modeste ou
+# une connexion lente, avec plantages BuildKit (`rpc error ... EOF`, manque de
+# RAM) — pour un résultat jamais utilisé. Vérifié : suite de tests complète
+# (Prophet inclus) au vert sans ~/.cmdstan.
+#
+# BUG CONNU (prophet==1.1.5), conservé : le wheel embarque aussi une copie
+# partielle de CmdStan (prophet/stan_model/cmdstan-2.33.1). Si ce dossier
+# existe, Prophet l'utilise en priorité (il vérifie seulement qu'il EXISTE,
+# cf. prophet/models.py) et échoue s'il est incomplet
+# (`'Prophet' object has no attribute 'stan_backend'`). Sans lui, Prophet
+# exécute directement prophet_model.bin, ce qui fonctionne.
 RUN rm -rf $(python -c "import importlib.resources as r; print(r.files('prophet') / 'stan_model' / 'cmdstan-2.33.1')")
-RUN python -c "from prophet import Prophet; Prophet(); print('Prophet + CmdStan : OK')"
+
+# Vérification RÉELLE (un vrai entraînement, pas seulement `Prophet()`) : le
+# build échoue immédiatement si Prophet ne fonctionne pas, plutôt que de le
+# découvrir en pleine démonstration.
+RUN python -c "import pandas as pd; from prophet import Prophet; \
+df = pd.DataFrame({'ds': pd.date_range('2024-01-01', periods=30), 'y': range(30)}); \
+Prophet(yearly_seasonality=False, daily_seasonality=False).fit(df); \
+print('Prophet : entrainement OK')"
 
 # Copié APRÈS l'installation des dépendances : un changement de code
 # applicatif (le cas le plus fréquent en développement) n'invalide donc
