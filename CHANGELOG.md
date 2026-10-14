@@ -1,5 +1,20 @@
 # Journal des modifications
 
+## corrections21 — 14 octobre 2026
+
+**Prévision des ventes : vue en langage métier pour les dirigeants, détails techniques en option** (module Maslaw)
+- Public visé : dirigeants, responsables et employés de PME. La vue par défaut ne montre plus de nom de modèle (Prophet, ARIMA, XGBoost) ni de métrique (RMSE, MAE) :
+  - ventes attendues sur l'horizon et par jour ;
+  - évolution par rapport au rythme des 30 derniers jours (en hausse / stable / en baisse) ;
+  - « Peut-on s'y fier ? » : fiabilité bonne / moyenne / faible, et accord ou désaccord des méthodes de calcul ;
+  - fourchette prudente (scénario bas / scénario haut) et écart habituel constaté par jour ;
+  - conseils concrets (stocks, trésorerie, prudence, données incomplètes).
+- La prévision affichée est celle du modèle le plus fiable, choisi automatiquement.
+- Bouton « Afficher les détails techniques » : synthèse comparative, 3 modèles, RMSE/MAE, intervalles (vue précédente, inchangée). Le choix est mémorisé dans le navigateur.
+- API : nouveau bloc `lecture_dirigeant` dans `GET /api/v1/analytics/forecast/sales/comparaison`, calculé de façon déterministe (sans LLM) par `comparaison_previsions._lecture_dirigeant`.
+- Copilote : consigne de répondre en langage métier, sans jargon technique sauf demande explicite.
+- 251 tests pytest (6 nouveaux, dont un contrôle d'absence de jargon), 27 tests Vitest (3 nouveaux).
+
 ## corrections20 — 14 octobre 2026
 
 **Reproductibilité du rapport académique**

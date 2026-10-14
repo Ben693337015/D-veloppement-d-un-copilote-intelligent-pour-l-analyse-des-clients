@@ -179,6 +179,137 @@ function CarteModele({ modele, historique, meilleur }) {
   );
 }
 
+const LIBELLE_FIABILITE = { bonne: "Bonne", moyenne: "Moyenne", faible: "Faible" };
+const EVOLUTION = {
+  hausse: { fleche: "↗", classe: "text-success" },
+  baisse: { fleche: "↘", classe: "text-danger" },
+  stable: { fleche: "→", classe: "text-ink" },
+};
+const CLE_MODE_EXPERT = "previsions.modeExpert";
+
+function lireModeExpert() {
+  try {
+    return window.localStorage.getItem(CLE_MODE_EXPERT) === "1";
+  } catch {
+    return false; // stockage indisponible (navigation privée…) : vue simple par défaut
+  }
+}
+
+function ecrireModeExpert(actif) {
+  try {
+    window.localStorage.setItem(CLE_MODE_EXPERT, actif ? "1" : "0");
+  } catch {
+    /* préférence non mémorisée : sans conséquence */
+  }
+}
+
+function Tuile({ libelle, children, detail }) {
+  return (
+    <div className="rounded-xl border border-line bg-surface px-4 py-3">
+      <p className="text-xs text-muted">{libelle}</p>
+      <div className="mt-1 font-display text-xl font-bold text-ink">{children}</div>
+      {detail && <p className="mt-1 text-xs leading-snug text-muted">{detail}</p>}
+    </div>
+  );
+}
+
+/** Vue par défaut, pour les dirigeants et employés de PME : une seule
+ * prévision (la plus fiable, choisie automatiquement), en langage métier —
+ * aucun nom de modèle ni métrique technique (cf. `lecture_dirigeant` côté API). */
+function VueDirigeant({ lecture, historique, modeles }) {
+  const retenu = modeles.find((m) => m.modele === lecture.modele_retenu && m.statut === "ok");
+  const lignes = useMemo(
+    () => (retenu ? construireLignes(historique, [{ ...retenu, nom: "Prévision" }]) : []),
+    [historique, retenu],
+  );
+
+  if (!lecture.disponible) {
+    return (
+      <section className="rounded-xl border border-line bg-paper p-4" data-testid="vue-dirigeant">
+        <p className="text-sm text-ink">{lecture.resume}</p>
+        <ul className="mt-2 space-y-1 text-[13px] text-muted">
+          {lecture.conseils.map((c) => (
+            <li key={c}>{c}</li>
+          ))}
+        </ul>
+      </section>
+    );
+  }
+
+  const evolution = EVOLUTION[lecture.sens_evolution];
+  return (
+    <section className="space-y-4" data-testid="vue-dirigeant">
+      <p className="text-[15px] font-medium leading-relaxed text-ink">{lecture.resume}</p>
+
+      <div className="grid gap-3 sm:grid-cols-3">
+        <Tuile libelle={lecture.titre} detail={`soit environ ${formatNumber(lecture.moyenne_jour)} par jour`}>
+          <span className="font-tabular">{formatNumber(lecture.total_prevu)}</span>
+        </Tuile>
+        <Tuile libelle="Par rapport à d'habitude" detail={lecture.evolution_texte}>
+          {evolution ? (
+            <span className={evolution.classe}>
+              {evolution.fleche} {lecture.sens_evolution === "stable" ? "Stable" : lecture.sens_evolution === "hausse" ? "En hausse" : "En baisse"}
+            </span>
+          ) : (
+            "—"
+          )}
+        </Tuile>
+        <Tuile
+          libelle="Peut-on s'y fier ?"
+          detail={
+            lecture.concordance === "incertaine"
+              ? "Les différentes méthodes de calcul ne sont pas d'accord : prudence."
+              : lecture.concordance === "solide"
+                ? "Les différentes méthodes de calcul donnent des résultats proches."
+                : null
+          }
+        >
+          {lecture.fiabilite ? (
+            <span className={`rounded-full px-2.5 py-0.5 text-sm font-semibold ${FIABILITE[lecture.fiabilite]}`}>
+              {LIBELLE_FIABILITE[lecture.fiabilite]}
+            </span>
+          ) : (
+            "—"
+          )}
+        </Tuile>
+      </div>
+
+      {retenu && (
+        <div className="rounded-xl border border-line bg-paper p-3">
+          <Graphique lignes={lignes} modeles={[{ ...retenu, nom: "Prévision" }]} hauteur={240} />
+          <p className="mt-1 text-[11px] text-muted">
+            Gris : vos ventes réelles · couleur : la prévision · zone claire : fourchette probable
+          </p>
+        </div>
+      )}
+
+      <div className="space-y-1.5 text-[13px] leading-relaxed text-ink">
+        {lecture.scenario_bas != null && lecture.scenario_haut != null && (
+          <p>
+            <strong>Fourchette prudente</strong> sur la période : entre {formatNumber(lecture.scenario_bas)} (scénario
+            bas) et {formatNumber(lecture.scenario_haut)} (scénario haut).
+          </p>
+        )}
+        {lecture.fiabilite_texte && <p className="text-muted">{lecture.fiabilite_texte}</p>}
+      </div>
+
+      {lecture.conseils.length > 0 && (
+        <div className="rounded-xl bg-brand-light p-4" data-testid="conseils-previsions">
+          <h3 className="mb-1.5 text-sm font-semibold text-ink">Ce que nous vous conseillons</h3>
+          <ul className="space-y-1.5 text-[13px] leading-relaxed text-ink">
+            {lecture.conseils.map((c) => (
+              <li key={c} className="flex gap-2">
+                <span className="mt-[7px] h-1 w-1 shrink-0 rounded-full bg-brand" />
+                <span>{c}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </section>
+  );
+}
+
 /** Prévision des ventes : les 3 modèles sont calculés automatiquement côté
  * serveur (en parallèle, en arrière-plan et mis en cache), sans choix manuel.
  * Affiche une synthèse, un graphique comparatif, puis un graphique interprété
@@ -188,6 +319,14 @@ export function PrevisionsVentes() {
   const [resultat, setResultat] = useState(null);
   const [chargement, setChargement] = useState(true);
   const [erreur, setErreur] = useState(null);
+  const [modeExpert, setModeExpert] = useState(lireModeExpert);
+
+  function basculerModeExpert() {
+    setModeExpert((actif) => {
+      ecrireModeExpert(!actif);
+      return !actif;
+    });
+  }
 
   useEffect(() => {
     let annule = false;
@@ -230,15 +369,14 @@ export function PrevisionsVentes() {
 
   return (
     <Card>
-      <CardTitle action={selecteurHorizon}>🔮 Prévision des ventes — Prophet, ARIMA et XGBoost</CardTitle>
+      <CardTitle action={selecteurHorizon}>🔮 Prévision des ventes</CardTitle>
 
       {erreur && <Alert tone="danger">{erreur}</Alert>}
 
       {chargement && (
         <div className="flex items-center gap-3 rounded-xl bg-paper px-4 py-3 text-sm text-muted" role="status">
           <Spinner size={16} className="text-brand" />
-          Calcul des 3 modèles en arrière-plan (entraînement, validation, prévision à {horizon} jours)… Le reste de la
-          page reste utilisable.
+          Calcul de la prévision à {horizon} jours en cours… Le reste de la page reste utilisable.
         </div>
       )}
 
@@ -246,8 +384,30 @@ export function PrevisionsVentes() {
         <p className="text-sm text-muted">{resultat.synthese.texte[0]}</p>
       )}
 
-      {!chargement && resultat && resultat.modeles.length > 0 && (
-        <div className="space-y-6">
+      {!chargement && resultat && resultat.modeles.length > 0 && resultat.lecture_dirigeant && (
+        <VueDirigeant lecture={resultat.lecture_dirigeant} historique={resultat.historique} modeles={resultat.modeles} />
+      )}
+
+      {!chargement && resultat && resultat.modeles.length > 0 && resultat.lecture_dirigeant && (
+        <div className="mt-5 border-t border-line pt-4">
+          <button
+            type="button"
+            onClick={basculerModeExpert}
+            aria-expanded={modeExpert}
+            className="text-sm font-medium text-brand hover:underline"
+          >
+            {modeExpert ? "Masquer les détails techniques" : "Afficher les détails techniques"}
+          </button>
+          {!modeExpert && (
+            <p className="mt-1 text-xs text-muted">
+              Méthodes de calcul comparées, mesures d'erreur et prévision de chaque méthode — pour les analystes.
+            </p>
+          )}
+        </div>
+      )}
+
+      {!chargement && resultat && resultat.modeles.length > 0 && (modeExpert || !resultat.lecture_dirigeant) && (
+        <div className="mt-4 space-y-6" data-testid="details-techniques">
           <section className="rounded-xl border border-line bg-paper p-4" data-testid="synthese-previsions">
             <h3 className="mb-2 text-sm font-semibold text-ink">Synthèse</h3>
             <ul className="space-y-1.5 text-[13px] leading-relaxed text-ink">

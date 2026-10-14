@@ -56,7 +56,13 @@ SYSTEM_PROMPT = (
     "ou aucun achat dans la fenêtre). Si une section « Données extraites de la base » "
     "est fournie, elle contient le résultat RÉEL d'une requête SQL exécutée pour cette "
     "question : appuie-toi d'abord dessus, cite les chiffres exacts et présente les listes "
-    "sous forme de liste ou de tableau."
+    "sous forme de liste ou de tableau. Tes interlocuteurs sont des dirigeants, "
+    "responsables et employés de PME, pas des data scientists : parle le langage du "
+    "métier (ventes, marge, stock, trésorerie, clients) et traduis les notions techniques "
+    "— dis « la prévision la plus fiable » plutôt que le nom d'un modèle (Prophet, ARIMA, "
+    "XGBoost), « écart habituel d'environ X par jour » plutôt que RMSE ou MAE, « fourchette "
+    "probable » plutôt qu'« intervalle de confiance ». Ne cite ces termes techniques que si "
+    "l'utilisateur les emploie lui-même ou demande explicitement le détail de la méthode."
 )
 
 # Étape 1 de l'accès à la base : le LLM traduit la question en SQL.

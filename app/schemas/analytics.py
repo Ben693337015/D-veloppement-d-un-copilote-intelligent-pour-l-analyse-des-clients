@@ -60,6 +60,29 @@ class SyntheseComparaison(BaseModel):
     texte: list[str] = []
 
 
+class LectureDirigeant(BaseModel):
+    """Prévision traduite en langage métier, sans nom de modèle ni métrique
+    technique (vue par défaut de l'interface, destinée aux dirigeants et
+    employés de PME) — cf. `comparaison_previsions._lecture_dirigeant`."""
+
+    disponible: bool
+    titre: str
+    resume: str
+    total_prevu: float | None = None
+    moyenne_jour: float | None = None
+    evolution: float | None = None  # vs rythme des 30 derniers jours (fraction)
+    sens_evolution: str | None = None  # "hausse" | "baisse" | "stable"
+    evolution_texte: str | None = None
+    fiabilite: str | None = None  # "bonne" | "moyenne" | "faible"
+    fiabilite_texte: str | None = None
+    ecart_jour: float | None = None  # écart moyen constaté par jour (MAE de validation)
+    concordance: str | None = None  # "solide" | "incertaine"
+    scenario_bas: float | None = None
+    scenario_haut: float | None = None
+    conseils: list[str] = []
+    modele_retenu: str | None = None  # affiché en mode expert uniquement
+
+
 class ComparaisonPrevisionsVentes(BaseModel):
     """Sortie de GET /api/v1/analytics/forecast/sales/comparaison."""
 
@@ -67,6 +90,7 @@ class ComparaisonPrevisionsVentes(BaseModel):
     historique: list[PointHistorique]
     modeles: list[PrevisionModele]
     synthese: SyntheseComparaison
+    lecture_dirigeant: LectureDirigeant | None = None
     calcule_le: datetime
     depuis_cache: bool = False
 

@@ -213,3 +213,94 @@ def test_prophet_reel(db_session):
     assert isinstance(q, pd.DataFrame)
     res = cp._un_modele(q, 7, "prophet", n, 100.0, 100.0)
     assert res["statut"] == "ok" and len(res["points"]) == 7
+
+
+# ── Lecture « dirigeant » : la prévision sans jargon technique ──────────────
+
+_JARGON = ("RMSE", "MAE", "Prophet", "ARIMA", "XGBoost", "intervalle de confiance", "modèle")
+
+
+def _md(modele, rmse, total, *, mae=None, sens="hausse", ecart=0.10, fiabilite="bonne", bornes=True, h=10):
+    points = [
+        {"date_prevision": f"2024-03-{j + 1:02d}", "valeur_prevue": total / h,
+         "borne_basse": total / h - 5 if bornes else None, "borne_haute": total / h + 5 if bornes else None}
+        for j in range(h)
+    ]
+    return {"modele": modele, "nom": cp.NOMS[modele], "statut": "ok", "points": points,
+            "rmse_validation": rmse, "mae_validation": mae if mae is not None else rmse / 2,
+            "indicateurs": {"total_prevu": total, "moyenne_jour": total / h, "ecart_niveau": ecart,
+                            "sens": sens, "fiabilite": fiabilite}}
+
+
+def _sans_jargon(lecture: dict) -> None:
+    textes = [lecture["titre"], lecture["resume"], lecture.get("evolution_texte") or "",
+              lecture.get("fiabilite_texte") or "", *lecture["conseils"]]
+    for texte in textes:
+        for mot in _JARGON:
+            assert mot.lower() not in texte.lower(), f"jargon « {mot} » dans : {texte}"
+
+
+def test_lecture_dirigeant_retient_le_modele_le_plus_fiable_et_parle_metier():
+    modeles = [_md("prophet", 30, 1000), _md("arima", 10, 1050, mae=4), _md("xgboost", 20, 1020)]
+    lecture = cp._lecture_dirigeant(modeles, horizon=10, moyenne_validation=100.0, rupture=None)
+    assert lecture["disponible"] is True
+    assert lecture["modele_retenu"] == "arima"  # RMSE le plus bas
+    assert lecture["total_prevu"] == 1050
+    assert lecture["sens_evolution"] == "hausse"
+    assert lecture["evolution_texte"].startswith("+10")
+    assert lecture["ecart_jour"] == 4  # écart moyen constaté (MAE), pas le RMSE
+    assert "4 % des ventes d'une journée" in lecture["fiabilite_texte"]
+    assert lecture["concordance"] == "solide"  # 1000 / 1020 / 1050 : écart < 20 %
+    # scénarios = somme des bornes journalières du modèle retenu (±5 par jour sur 10 jours)
+    assert lecture["scenario_bas"] == pytest.approx(1000)
+    assert lecture["scenario_haut"] == pytest.approx(1100)
+    assert any("stocks" in c for c in lecture["conseils"])
+    _sans_jargon(lecture)
+
+
+def test_lecture_dirigeant_baisse_incertaine_et_rupture():
+    modeles = [_md("prophet", 30, 600, sens="baisse", ecart=-0.3, fiabilite="faible"),
+               _md("arima", 25, 900, sens="baisse", ecart=-0.3, fiabilite="faible")]
+    lecture = cp._lecture_dirigeant(modeles, horizon=10, moyenne_validation=80.0, rupture=-0.6)
+    assert lecture["sens_evolution"] == "baisse"
+    assert lecture["concordance"] == "incertaine"  # 600 vs 900 : écart de 40 %
+    conseils = " ".join(lecture["conseils"])
+    assert "trésorerie" in conseils
+    assert "prudent" in conseils
+    assert "dernières ventes ont bien été importées" in conseils
+    _sans_jargon(lecture)
+
+
+def test_lecture_dirigeant_sans_intervalle_utilise_l_ecart_moyen():
+    """Modèle retenu sans fourchette native (XGBoost) : scénarios = ± écart moyen par jour."""
+    modeles = [_md("xgboost", 10, 1000, mae=8, bornes=False, ecart=0.02, sens="stable")]
+    lecture = cp._lecture_dirigeant(modeles, horizon=10, moyenne_validation=100.0, rupture=None)
+    assert lecture["sens_evolution"] == "stable"
+    assert lecture["scenario_bas"] == pytest.approx(920)
+    assert lecture["scenario_haut"] == pytest.approx(1080)
+    assert lecture["concordance"] is None  # un seul modèle : rien à comparer
+    assert lecture["conseils"] == ["Activité stable attendue : pas d'ajustement particulier nécessaire."]
+    _sans_jargon(lecture)
+
+
+def test_lecture_dirigeant_sans_modele_valide():
+    lecture = cp._lecture_dirigeant([], horizon=30, moyenne_validation=0.0, rupture=None)
+    assert lecture["disponible"] is False
+    assert lecture["conseils"]
+    _sans_jargon(lecture)
+
+
+def test_lecture_dirigeant_exposee_par_l_api(client, db_session, sans_prophet):
+    _ventes(db_session)
+    corps = client.get("/api/v1/analytics/forecast/sales/comparaison?horizon_jours=14").json()
+    lecture = corps["lecture_dirigeant"]
+    assert lecture["disponible"] is True
+    assert lecture["modele_retenu"] == corps["synthese"]["meilleur_modele"]
+    assert lecture["scenario_bas"] <= lecture["total_prevu"] <= lecture["scenario_haut"]
+    _sans_jargon(lecture)
+
+
+def test_lecture_dirigeant_base_vide(client, db_session):
+    lecture = client.get("/api/v1/analytics/forecast/sales/comparaison").json()["lecture_dirigeant"]
+    assert lecture["disponible"] is False
+    assert "Importez vos ventes" in lecture["conseils"][0]

@@ -38,7 +38,7 @@ export function VentesStocks() {
         icon={IconTrendingUp}
         eyebrow="Module Maslaw"
         title="Ventes, stocks & trésorerie"
-        subtitle="KPIs globaux, alertes de réapprovisionnement, et prévision des ventes par 3 modèles calculés automatiquement sur vos données, avec interprétation."
+        subtitle="Vos chiffres clés, les produits à réapprovisionner et les ventes attendues dans les prochaines semaines, avec nos conseils."
       />
 
       {erreurInitiale && <Alert tone="danger">{erreurInitiale}</Alert>}
