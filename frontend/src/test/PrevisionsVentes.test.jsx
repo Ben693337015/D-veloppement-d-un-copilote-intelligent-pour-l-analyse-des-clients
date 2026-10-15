@@ -35,7 +35,7 @@ const REPONSE = {
 test("lance les 3 modèles sans action de l'utilisateur et affiche graphiques + interprétations", async () => {
   getComparaisonPrevisions.mockResolvedValueOnce(REPONSE);
   render(<PrevisionsVentes />);
-  expect(screen.getByRole("status")).toHaveTextContent(/calcul des 3 modèles en arrière-plan/i);
+  expect(screen.getByRole("status")).toHaveTextContent(/calcul de la prévision à 30 jours en cours/i);
   expect(getComparaisonPrevisions).toHaveBeenCalledWith(30);
 
   expect(await screen.findByTestId("synthese-previsions")).toHaveTextContent("Modèle le plus fiable sur vos données : XGBoost.");
@@ -62,4 +62,61 @@ test("un modèle en échec est signalé sans masquer les autres", async () => {
   render(<PrevisionsVentes />);
   expect(await screen.findByTestId("prevision-xgboost")).toHaveTextContent(/n'a pas pu être calculé : panne simulée/);
   expect(screen.getByTestId("prevision-arima")).toHaveTextContent("Interprétation ARIMA.");
+});
+
+
+// ── Vue dirigeant (par défaut) et mode expert ───────────────────────────────
+
+const LECTURE = {
+  disponible: true,
+  titre: "Ventes attendues sur les 30 prochains jours",
+  resume: "Environ 210 de ventes attendues sur 30 jours, +6 % par rapport à votre rythme des 30 derniers jours.",
+  total_prevu: 210, moyenne_jour: 105, evolution: 0.06, sens_evolution: "hausse",
+  evolution_texte: "+6 % par rapport à votre rythme des 30 derniers jours",
+  fiabilite: "bonne", fiabilite_texte: "Sur les semaines passées, la prévision d'une journée s'est écartée en moyenne de ±5 des ventes réelles.",
+  ecart_jour: 5, concordance: "solide", scenario_bas: 190, scenario_haut: 230,
+  conseils: ["Ventes en hausse attendue : vérifiez que vos stocks suivront (alertes de stock ci-dessus)."],
+  modele_retenu: "xgboost",
+};
+const AVEC_LECTURE = { ...REPONSE, lecture_dirigeant: LECTURE };
+
+beforeEach(() => window.localStorage.clear());
+
+test("par défaut : vue dirigeant en langage métier, sans nom de modèle ni métrique", async () => {
+  getComparaisonPrevisions.mockResolvedValueOnce(AVEC_LECTURE);
+  const { container } = render(<PrevisionsVentes />);
+  const vue = await screen.findByTestId("vue-dirigeant");
+  expect(vue).toHaveTextContent(LECTURE.resume);
+  expect(vue).toHaveTextContent("En hausse");
+  expect(vue).toHaveTextContent("Bonne");
+  expect(vue).toHaveTextContent(/fourchette prudente/i);
+  expect(screen.getByTestId("conseils-previsions")).toHaveTextContent("vérifiez que vos stocks suivront");
+  for (const jargon of [/RMSE/, /MAE/, /Prophet/, /ARIMA/, /XGBoost/]) {
+    expect(container).not.toHaveTextContent(jargon);
+  }
+  expect(screen.queryByTestId("details-techniques")).not.toBeInTheDocument();
+});
+
+test("le bouton « détails techniques » affiche les 3 méthodes et leurs mesures, et s'en souvient", async () => {
+  getComparaisonPrevisions.mockResolvedValue(AVEC_LECTURE);
+  const { unmount } = render(<PrevisionsVentes />);
+  await screen.findByTestId("vue-dirigeant");
+  await userEvent.setup().click(screen.getByRole("button", { name: /afficher les détails techniques/i }));
+  const details = screen.getByTestId("details-techniques");
+  expect(details).toHaveTextContent("Modèle le plus fiable sur vos données : XGBoost.");
+  expect(within(screen.getByTestId("prevision-arima")).getByText("RMSE")).toBeInTheDocument();
+  unmount();
+
+  render(<PrevisionsVentes />);
+  expect(await screen.findByTestId("details-techniques")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: /masquer les détails techniques/i })).toBeInTheDocument();
+});
+
+test("prévision indisponible : message et conseil en langage simple", async () => {
+  getComparaisonPrevisions.mockResolvedValueOnce({
+    ...REPONSE,
+    lecture_dirigeant: { disponible: false, titre: "Ventes attendues", resume: "Pas encore assez d'historique de ventes pour une prévision fiable.", conseils: ["Importez au moins quelques semaines de ventes pour obtenir une prévision."] },
+  });
+  render(<PrevisionsVentes />);
+  expect(await screen.findByTestId("vue-dirigeant")).toHaveTextContent("Pas encore assez d'historique");
 });

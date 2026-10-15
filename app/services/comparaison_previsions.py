@@ -203,6 +203,145 @@ def _synthese(modeles: list[dict], rupture: float | None = None) -> dict:
     return {"meilleur_modele": meilleur["modele"], "texte": texte}
 
 
+# ── Lecture « dirigeant » (sans jargon) ─────────────────────────────────────
+#
+# Public de la plateforme : dirigeants, responsables et employés de PME, pas
+# des data scientists. Les noms de modèles (Prophet, ARIMA, XGBoost) et les
+# métriques (RMSE, MAE) restent disponibles pour le « mode expert » de
+# l'interface et pour le rapport, mais la vue par défaut ne montre que des
+# notions métier : combien je vais vendre, est-ce plus ou moins que d'habitude,
+# à quel point je peux m'y fier, et quoi faire. Calcul DÉTERMINISTE (pas de
+# LLM), comme `_interpreter` : reproductible et testable.
+
+SEUIL_EVOLUTION = 0.05  # ±5 % vs le rythme récent : en dessous, activité « stable »
+
+
+def _dispersion(valides: list[dict]) -> float | None:
+    """Écart relatif entre la prévision totale la plus haute et la plus basse
+    des modèles validés (même définition que dans `_synthese`)."""
+    totaux = [m["indicateurs"]["total_prevu"] for m in valides]
+    if len(totaux) < 2 or np.mean(totaux) <= 0:
+        return None
+    return (max(totaux) - min(totaux)) / float(np.mean(totaux))
+
+
+def _scenarios(meilleur: dict) -> tuple[float, float] | None:
+    """Scénario bas / scénario haut sur l'horizon, pour le modèle retenu.
+
+    Avec intervalle de confiance (Prophet, ARIMA) : somme des bornes
+    journalières. Sans (XGBoost) : prévision ± écart moyen de validation (MAE)
+    par jour. Dans les deux cas, c'est une fourchette PRUDENTE (les écarts
+    journaliers ne s'additionnent pas tous dans le même sens en pratique) —
+    d'où le vocabulaire « scénario », pas « intervalle à 80 % »."""
+    points = meilleur.get("points") or []
+    if not points:
+        return None
+    if all(p.get("borne_basse") is not None and p.get("borne_haute") is not None for p in points):
+        return (
+            max(0.0, float(sum(p["borne_basse"] for p in points))),
+            float(sum(p["borne_haute"] for p in points)),
+        )
+    mae = meilleur.get("mae_validation")
+    if mae is None:
+        return None
+    total = float(sum(p["valeur_prevue"] for p in points))
+    return max(0.0, total - mae * len(points)), total + mae * len(points)
+
+
+def _lecture_dirigeant(
+    modeles: list[dict], horizon: int, moyenne_validation: float, rupture: float | None
+) -> dict:
+    """Traduction de la meilleure prévision en langage métier (vue par
+    défaut de l'interface et base des réponses du copilote)."""
+    titre = f"Ventes attendues sur les {horizon} prochains jours"
+    valides = [m for m in modeles if m["statut"] == "ok" and m["rmse_validation"] is not None]
+    if not valides:
+        return {
+            "disponible": False,
+            "titre": titre,
+            "resume": "Pas encore assez d'historique de ventes pour une prévision fiable.",
+            "conseils": ["Importez au moins quelques semaines de ventes pour obtenir une prévision."],
+        }
+
+    meilleur = min(valides, key=lambda m: m["rmse_validation"])
+    ind = meilleur["indicateurs"]
+    total, moyenne_jour = ind["total_prevu"], ind["moyenne_jour"]
+    evolution = ind["ecart_niveau"]
+
+    if evolution is None:
+        sens_evolution, evolution_texte = None, None
+    elif evolution > SEUIL_EVOLUTION:
+        sens_evolution = "hausse"
+        evolution_texte = f"{_pct(evolution)} par rapport à votre rythme des {FENETRE_REFERENCE_JOURS} derniers jours"
+    elif evolution < -SEUIL_EVOLUTION:
+        sens_evolution = "baisse"
+        evolution_texte = f"{_pct(evolution)} par rapport à votre rythme des {FENETRE_REFERENCE_JOURS} derniers jours"
+    else:
+        sens_evolution = "stable"
+        evolution_texte = f"proche de votre rythme des {FENETRE_REFERENCE_JOURS} derniers jours ({_pct(evolution)})"
+
+    mae = meilleur.get("mae_validation")
+    ecart_jour = float(mae) if mae is not None else None
+    ecart_relatif = ecart_jour / moyenne_validation if ecart_jour is not None and moyenne_validation > 0 else None
+    fiabilite = ind["fiabilite"]
+    fiabilite_texte = (
+        f"Sur les semaines passées, la prévision d'une journée s'est écartée en moyenne de "
+        f"±{_fmt(ecart_jour)} des ventes réelles"
+        + (f" (environ {ecart_relatif * 100:.0f} % des ventes d'une journée)" if ecart_relatif is not None else "")
+        + "."
+        if ecart_jour is not None
+        else None
+    )
+
+    dispersion = _dispersion(valides)
+    concordance = None if dispersion is None else ("incertaine" if dispersion > SEUIL_DIVERGENCE else "solide")
+    scenarios = _scenarios(meilleur)
+
+    conseils: list[str] = []
+    if sens_evolution == "hausse":
+        conseils.append("Ventes en hausse attendue : vérifiez que vos stocks suivront (alertes de stock ci-dessus).")
+    elif sens_evolution == "baisse":
+        conseils.append(
+            "Ventes en baisse attendue : surveillez votre trésorerie et envisagez une relance de vos clients."
+        )
+    elif sens_evolution == "stable":
+        conseils.append("Activité stable attendue : pas d'ajustement particulier nécessaire.")
+    if fiabilite == "faible" or concordance == "incertaine":
+        conseils.append(
+            "Prévision peu sûre : restez prudent sur les engagements importants (grosses commandes, embauches)."
+        )
+    if rupture is not None and abs(rupture) > SEUIL_RUPTURE:
+        conseils.append(
+            f"Vos ventes récentes ont fortement changé ({_pct(rupture)} sur {FENETRE_REFERENCE_JOURS} jours) : "
+            "vérifiez que toutes les dernières ventes ont bien été importées."
+        )
+
+    resume = f"Environ {_fmt(total)} de ventes attendues sur {horizon} jours"
+    if evolution_texte:
+        resume += f", {evolution_texte}"
+    resume += "."
+
+    return {
+        "disponible": True,
+        "titre": titre,
+        "resume": resume,
+        "total_prevu": total,
+        "moyenne_jour": moyenne_jour,
+        "evolution": evolution,
+        "sens_evolution": sens_evolution,
+        "evolution_texte": evolution_texte,
+        "fiabilite": fiabilite,
+        "fiabilite_texte": fiabilite_texte,
+        "ecart_jour": ecart_jour,
+        "concordance": concordance,
+        "scenario_bas": scenarios[0] if scenarios else None,
+        "scenario_haut": scenarios[1] if scenarios else None,
+        "conseils": conseils,
+        # Pour le mode expert uniquement : quel modèle a produit ces chiffres.
+        "modele_retenu": meilleur["modele"],
+    }
+
+
 # ── Calcul ──────────────────────────────────────────────────────────────────
 
 
@@ -232,6 +371,12 @@ def _calculer(db: Session, horizon: int) -> dict:
     if quotidien.empty:
         return {"horizon_jours": horizon, "historique": [], "modeles": [],
                 "synthese": {"meilleur_modele": None, "texte": ["Aucune vente importée : rien à prévoir."]},
+                "lecture_dirigeant": {
+                    "disponible": False,
+                    "titre": f"Ventes attendues sur les {horizon} prochains jours",
+                    "resume": "Aucune vente importée : rien à prévoir pour l'instant.",
+                    "conseils": ["Importez vos ventes (page Données) pour obtenir une prévision."],
+                },
                 "calcule_le": datetime.utcnow()}
     y = quotidien["y"]
     reference = float(y.tail(FENETRE_REFERENCE_JOURS).mean())
@@ -253,6 +398,7 @@ def _calculer(db: Session, horizon: int) -> dict:
         "historique": historique,
         "modeles": modeles,
         "synthese": _synthese(modeles, rupture),
+        "lecture_dirigeant": _lecture_dirigeant(modeles, horizon, moyenne_validation, rupture),
         "calcule_le": datetime.utcnow(),
     }
 
