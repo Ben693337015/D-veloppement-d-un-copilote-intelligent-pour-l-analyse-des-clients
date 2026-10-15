@@ -106,6 +106,7 @@ def test_simulation_ajoute_l_ecart_de_ventes_a_la_tresorerie(db_session, monkeyp
     monkeypatch.setattr(co, "prevision_ventes", lambda db, p: {"disponible": True, "total_prevu": 10_000.0})
     r = co.simulation_ventes(db_session, co.ParamsSimulation(variation_pct=-20, horizon_jours=14))
     assert r["ventes_dans_ce_scenario"] == 8000 and r["ecart_de_ventes"] == -2000
+    assert r["ecart_de_ventes_par_jour"] == pytest.approx(-2000 / 14, abs=0.01)  # calculé, pas laissé au LLM
     fin_base = r["tresorerie_sans_changement"]["solde_prevu_fin_periode"]
     fin_scenario = r["tresorerie_dans_ce_scenario"]["solde_prevu_fin_periode"]
     assert fin_scenario == pytest.approx(fin_base - 2000)
@@ -189,3 +190,20 @@ def test_un_outil_en_erreur_est_signale_sans_casser_la_reponse(client, db_sessio
     corps = client.post("/api/v1/copilot/chat", json={"question": "Ventes dans 3 ans ?"}).json()
     assert corps["mode"] == "llm" and corps["outils_utilises"][0]["statut"] == "erreur"
     assert "ÉCHEC" in faux.appels[1][1] and "horizon_jours" in faux.appels[1][1]
+
+
+def test_consigne_devise(monkeypatch):
+    from app.services import copilot_service
+
+    monkeypatch.setattr(settings, "DEVISE", None)
+    assert "SANS symbole monétaire" in copilot_service._consigne_devise()
+    monkeypatch.setattr(settings, "DEVISE", "FCFA")
+    assert copilot_service._consigne_devise() == " Les montants sont exprimés en FCFA."
+
+
+def test_la_reponse_finale_interdit_devise_inventee_et_calculs_maison(client, db_session, llm, monkeypatch):
+    monkeypatch.setattr(settings, "DEVISE", None)
+    faux = llm("AUCUNE", "Bonjour.")
+    client.post("/api/v1/copilot/chat", json={"question": "Bonjour"})
+    prompt_reponse = faux.appels[1][0]
+    assert "SANS symbole monétaire" in prompt_reponse and "Ne refais AUCUN calcul" in prompt_reponse

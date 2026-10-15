@@ -63,8 +63,23 @@ SYSTEM_PROMPT = (
     "— dis « la prévision la plus fiable » plutôt que le nom d'un modèle (Prophet, ARIMA, "
     "XGBoost), « écart habituel d'environ X par jour » plutôt que RMSE ou MAE, « fourchette "
     "probable » plutôt qu'« intervalle de confiance ». Ne cite ces termes techniques que si "
-    "l'utilisateur les emploie lui-même ou demande explicitement le détail de la méthode."
+    "l'utilisateur les emploie lui-même ou demande explicitement le détail de la méthode. "
+    "Ne refais AUCUN calcul toi-même (ni division, ni pourcentage, ni total) : reprends "
+    "uniquement les chiffres fournis dans le contexte, les données et les résultats de calcul ; "
+    "si un chiffre utile manque, dis-le plutôt que de l'estimer."
 )
+
+
+def _consigne_devise() -> str:
+    """La devise n'apparaît pas dans les fichiers importés : sans DEVISE
+    configurée, le LLM ne doit pas en inventer une (constaté : « € » ajouté
+    sur des données sans devise)."""
+    if settings.DEVISE:
+        return f" Les montants sont exprimés en {settings.DEVISE}."
+    return (
+        " La devise des montants n'est pas connue : écris les montants SANS symbole monétaire "
+        "(ni €, ni $, ni FCFA)."
+    )
 
 # Étape 1 de l'accès à la base : le LLM traduit la question en SQL.
 def system_prompt_sql() -> str:
@@ -221,7 +236,21 @@ def _section_prevision_ventes(db: Session) -> list[str]:
         return [f"Prévision des ventes : indisponible ({exc})."]
     if not res["modeles"]:
         return ["Prévision des ventes : aucune vente importée."]
-    lignes = [f"Prévision des ventes à {res['horizon_jours']} jours, 3 modèles comparés :"]
+    lignes = [f"Prévision des ventes à {res['horizon_jours']} jours (à présenter en langage métier) :"]
+    lecture = res.get("lecture_dirigeant") or {}
+    if lecture:
+        lignes.append(f"  - {lecture['resume']}")
+        if lecture.get("fiabilite"):
+            lignes.append(f"  - Fiabilité : {lecture['fiabilite']}. {lecture.get('fiabilite_texte') or ''}".rstrip())
+        if lecture.get("scenario_bas") is not None:
+            lignes.append(
+                f"  - Fourchette prudente : {lecture['scenario_bas']:.0f} à {lecture['scenario_haut']:.0f}."
+            )
+        lignes += [f"  - Conseil : {c}" for c in lecture.get("conseils", [])]
+    lignes.append(
+        "  [Détail technique — ne citer les noms de méthodes et les mesures d'erreur que si "
+        "l'utilisateur demande comment la prévision est calculée]"
+    )
     lignes += [f"  - Synthèse : {t}" for t in res["synthese"]["texte"]]
     for m in res["modeles"]:
         if m["statut"] != "ok":
@@ -466,7 +495,7 @@ def answer_question(db: Session, question: str) -> dict:
             )
         prompt_utilisateur += f"\n\nQuestion : {question}"
 
-        reponse_llm = llm_client.generate_completion(SYSTEM_PROMPT, prompt_utilisateur)
+        reponse_llm = llm_client.generate_completion(SYSTEM_PROMPT + _consigne_devise(), prompt_utilisateur)
         modele = llm_client.dernier_modele_utilise() or modele
         sources = ["analytics_service", "marketing_service", "forecasting_service"]
         if resultats:

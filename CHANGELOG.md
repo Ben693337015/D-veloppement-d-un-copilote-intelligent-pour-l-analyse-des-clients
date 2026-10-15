@@ -12,7 +12,8 @@
 - Sécurité : paramètres validés (Pydantic, bornes) avant tout calcul, au plus 3 outils par question, aucun outil n'écrit en base ; un outil en échec est signalé au LLM sans casser la réponse.
 - Interface Copilote : « Calculs effectués » sous chaque réponse, exemples de questions cliquables, présentation en langage courant.
 - Correctif trésorerie : l'alerte ne dit plus « solde négatif » quand le solde, encore positif, passe seulement sous un seuil critique positif.
-- 262 tests pytest (11 nouveaux), 29 tests Vitest (2 nouveaux).
+- Après un premier essai réel (Groq, gpt-oss-20b) : le LLM ajoutait « € » à des montants sans devise, refaisait de travers une division (« 0,15 € par jour » au lieu de ~330) et citait le nom du modèle. Correctifs : variable `DEVISE` (vide = aucun symbole affiché), écart par jour fourni tout calculé par la simulation, consigne « ne refais aucun calcul », et contexte qui présente d'abord la prévision en langage métier (détail des 3 modèles signalé comme technique).
+- 264 tests pytest (13 nouveaux), 29 tests Vitest (2 nouveaux).
 
 ## corrections21 — 14 octobre 2026
 

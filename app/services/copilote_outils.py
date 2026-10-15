@@ -165,6 +165,8 @@ def simulation_ventes(db: Session, p: ParamsSimulation) -> dict:
         "ventes_prevues_sans_changement": round(total_base, 2),
         "ventes_dans_ce_scenario": round(total_base + delta, 2),
         "ecart_de_ventes": round(delta, 2),
+        # Calculé ici : les petits LLM se trompent sur ce genre de division.
+        "ecart_de_ventes_par_jour": round(delta / p.horizon_jours, 2),
         "tresorerie_sans_changement": {k: reference[k] for k in ("solde_prevu_fin_periode", "niveau_alerte")},
         "tresorerie_dans_ce_scenario": {
             k: simule[k] for k in ("solde_prevu_fin_periode", "point_le_plus_bas", "niveau_alerte", "message")
