@@ -403,6 +403,35 @@ def _calculer(db: Session, horizon: int) -> dict:
     }
 
 
+def est_en_cache(db: Session, horizon: int) -> bool:
+    with _verrou:
+        return (_signature(db), horizon) in _cache
+
+
+def calculer_un_modele(db: Session, horizon: int, modele: str) -> dict:
+    """Comme `comparer_modeles`, mais pour UN seul modèle (déjà désigné comme
+    le plus fiable) — utilisé par le copilote pour un horizon non encore
+    calculé (cf. `copilote_outils._comparaison_rapide`). Non mis en cache."""
+    quotidien, n_plafonnes = forecasting_service._serie_ca_journalier(db)
+    if quotidien.empty:
+        return _calculer(db, horizon)
+    y = quotidien["y"]
+    reference = float(y.tail(FENETRE_REFERENCE_JOURS).mean())
+    avant = y.iloc[-(FENETRE_REFERENCE_JOURS + 90):-FENETRE_REFERENCE_JOURS]
+    rupture = (reference - float(avant.mean())) / float(avant.mean()) if len(avant) and avant.mean() > 0 else None
+    _, test = forecasting_service._decoupe_train_test(quotidien)
+    moyenne_validation = float(test["y"].mean()) if len(test) else reference
+    modeles = [_un_modele(quotidien, horizon, modele, n_plafonnes, reference, moyenne_validation)]
+    return {
+        "horizon_jours": horizon,
+        "historique": [],
+        "modeles": modeles,
+        "synthese": _synthese(modeles, rupture),
+        "lecture_dirigeant": _lecture_dirigeant(modeles, horizon, moyenne_validation, rupture),
+        "calcule_le": datetime.utcnow(),
+    }
+
+
 def comparer_modeles(db: Session, horizon: int = 30) -> dict:
     """Résultat des 3 modèles pour les données actuelles (depuis le cache si
     elles n'ont pas changé ; sinon calculé, ou attendu s'il est en cours)."""

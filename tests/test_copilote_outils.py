@@ -97,7 +97,7 @@ def test_tresorerie_prevue_renvoie_solde_et_alerte(db_session):
     r = co.tresorerie_prevue(db_session, co.ParamsTresorerie(horizon_jours=14, seuil_critique=1_000_000))
     assert r["solde_actuel"] == pytest.approx(4000)
     assert r["niveau_alerte"] == "risque_deficit"  # solde ~4 000 très en dessous du seuil demandé
-    assert "sous votre seuil critique de 1000000" in r["message"]  # positif : pas « négatif »
+    assert "sous votre seuil critique de 1 000 000" in r["message"]  # positif : pas « négatif »
     assert set(r) >= {"solde_prevu_fin_periode", "point_le_plus_bas", "date_du_point_le_plus_bas", "message"}
 
 
@@ -119,9 +119,23 @@ def test_prevision_ventes_auto_reprend_la_lecture_dirigeant(db_session, monkeypa
         "lecture_dirigeant": {"disponible": True, "total_prevu": 140.0, "modele_retenu": "arima"},
         "modeles": [{"modele": "arima", "points": points}],
     })
-    r = co.prevision_ventes(db_session, co.ParamsPrevisionVentes(horizon_jours=14))
+    r = co.prevision_ventes(db_session, co.ParamsPrevisionVentes(horizon_jours=30))
     assert r["total_prevu"] == 140 and "modele_retenu" not in r  # pas de détail technique
     assert [s["ventes_prevues"] for s in r["detail_par_semaine"]] == [70, 70]
+
+
+def test_nouvel_horizon_n_entraine_que_le_modele_le_plus_fiable(db_session, monkeypatch):
+    """Temps de réponse : pour un horizon pas encore calculé, un seul modèle
+    (le plus fiable à 30 jours) est entraîné, pas les trois."""
+    appels = []
+    monkeypatch.setattr(co.comparaison_previsions, "est_en_cache", lambda db, h: False)
+    monkeypatch.setattr(co.comparaison_previsions, "comparer_modeles", lambda db, h: appels.append(("3 modèles", h)) or {
+        "lecture_dirigeant": {"disponible": True, "modele_retenu": "xgboost"}, "modeles": []})
+    monkeypatch.setattr(co.comparaison_previsions, "calculer_un_modele", lambda db, h, m: appels.append((m, h)) or {
+        "lecture_dirigeant": {"disponible": True, "total_prevu": 900.0, "modele_retenu": m}, "modeles": []})
+    r = co.prevision_ventes(db_session, co.ParamsPrevisionVentes(horizon_jours=60))
+    assert appels == [("3 modèles", 30), ("xgboost", 60)]
+    assert r["total_prevu"] == 900
 
 
 # ── Orchestrateur : le copilote choisit et exécute les outils ──────────────
@@ -207,3 +221,54 @@ def test_la_reponse_finale_interdit_devise_inventee_et_calculs_maison(client, db
     client.post("/api/v1/copilot/chat", json={"question": "Bonjour"})
     prompt_reponse = faux.appels[1][0]
     assert "SANS symbole monétaire" in prompt_reponse and "Ne refais AUCUN calcul" in prompt_reponse
+
+
+# ── Mémoire de conversation et briefing proactif ────────────────────────────
+
+
+def test_la_memoire_de_conversation_est_transmise_au_llm(client, db_session, llm):
+    faux = llm('```outil\n{"nom": "prevision_ventes", "parametres": {"horizon_jours": 90}}\n```', "Sur 90 jours : …")
+    historique = [
+        {"role": "user", "contenu": "Combien vais-je vendre dans les 30 prochains jours ?"},
+        {"role": "assistant", "contenu": "Environ 4 millions sur 30 jours."},
+    ]
+    r = client.post("/api/v1/copilot/chat", json={"question": "Et pour 90 jours ?", "historique": historique})
+    assert r.status_code == 200
+    for _systeme, message in faux.appels:  # planification ET réponse finale
+        assert "Conversation précédente" in message
+        assert "Utilisateur : Combien vais-je vendre dans les 30 prochains jours ?" in message
+        assert message.rstrip().endswith("Question : Et pour 90 jours ?")
+
+
+def test_historique_trop_long_refuse_et_messages_tronques():
+    from app.services import copilot_service
+
+    texte = copilot_service._texte_historique([{"role": "user", "contenu": "x" * 5000}] * 10)
+    assert texte.count("Utilisateur :") == 6 and "…" in texte and len(texte) < 6 * 800
+
+
+def test_briefing_signale_stock_urgent_et_clients_a_risque(client, db_session, monkeypatch):
+    _ventes(db_session, "A", 10)
+    _stock(db_session, "A", 50)
+    db_session.commit()
+    monkeypatch.setattr(co, "tresorerie_prevue", lambda db, p: {"niveau_alerte": "ok"})
+    monkeypatch.setattr(co, "prevision_ventes", lambda db, p: {"disponible": False})
+    from app.services import marketing_service
+    monkeypatch.setattr(marketing_service, "get_segment_summary", lambda db: [
+        {"segment_rfm": "À risque", "nb_clients": 4, "montant_total_moyen": 1234.0,
+         "action_marketing_recommandee": "Campagne de relance ciblée"},
+    ])
+    points = client.get("/api/v1/copilot/briefing").json()["points"]
+    assert [p["domaine"] for p in points] == ["stocks", "clients"]  # urgent d'abord
+    assert points[0]["niveau"] == "urgent" and "Produit A" in points[0]["detail"]
+    assert points[1]["titre"] == "4 client(s) à risque de départ"
+    assert all(p["question"] for p in points)
+
+
+def test_briefing_ne_casse_jamais(client, db_session, monkeypatch):
+    def panne(*a, **k):
+        raise RuntimeError("panne simulée")
+
+    monkeypatch.setattr(co, "reapprovisionnement", panne)
+    r = client.get("/api/v1/copilot/briefing")
+    assert r.status_code == 200 and isinstance(r.json()["points"], list)

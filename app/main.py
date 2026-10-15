@@ -55,10 +55,28 @@ def _journaliser_fournisseur_llm() -> None:
         _log.warning("Copilote : %s", avertissement)
 
 
+def _prechauffer_previsions() -> None:
+    """Temps de réponse du copilote : les prévisions (3 modèles) sont gardées
+    en mémoire, donc perdues à chaque redémarrage de l'API — la première
+    question au copilote (ou la page Ventes) attendait alors leur calcul
+    complet. On le lance en arrière-plan dès le démarrage. Jamais bloquant :
+    en cas d'échec (base vide ou injoignable), le calcul sera fait à la demande."""
+    import threading
+
+    from app.core.database import engine
+    from app.services import comparaison_previsions
+
+    threading.Thread(
+        target=comparaison_previsions.precalculer_en_arriere_plan, args=(engine,), daemon=True,
+        name="prechauffage-previsions",
+    ).start()
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     _creer_tables_ajoutees()
     _journaliser_fournisseur_llm()
+    _prechauffer_previsions()
     yield
 
 

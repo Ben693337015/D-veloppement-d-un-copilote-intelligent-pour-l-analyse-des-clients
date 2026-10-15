@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { lireFournisseurLlm, poserQuestion } from "../api/client";
-import { PageHeader } from "../components/ui/PageHeader";
+import { lireBriefing, lireFournisseurLlm, poserQuestion } from "../api/client";
+import { Markdown } from "../components/Markdown";
 import { Spinner } from "../components/ui/Spinner";
 import { IconChat, IconSend } from "../components/icons";
 
@@ -21,6 +21,15 @@ const EXEMPLES = [
   "Quels produits dois-je commander, et en quelle quantité ?",
 ];
 
+// Messages renvoyés au serveur comme mémoire de conversation (cf. copilot_service).
+const MEMOIRE_MESSAGES = 6;
+
+const STYLE_NIVEAU = {
+  urgent: { pastille: "bg-danger", libelle: "Urgent", texte: "text-danger" },
+  attention: { pastille: "bg-accent", libelle: "À surveiller", texte: "text-accent-dark" },
+  info: { pastille: "bg-brand", libelle: "Info", texte: "text-brand" },
+};
+
 /** Paramètres d'un outil en clair (« horizon : 60 jours · variation : −15 % »). */
 function decrireParametres(p = {}) {
   const morceaux = [];
@@ -32,19 +41,64 @@ function decrireParametres(p = {}) {
   return morceaux.join(" · ");
 }
 
+/** Briefing proactif : ce qui demande l'attention, sans attendre une question. */
+function Briefing({ points, onQuestion, desactive }) {
+  if (points === null) return null;
+  return (
+    <section className="rounded-2xl border border-line bg-paper p-4" data-testid="briefing">
+      <h2 className="mb-2 text-sm font-semibold text-ink">
+        {points.length
+          ? `${points.length} point${points.length > 1 ? "s" : ""} demande${points.length > 1 ? "nt" : ""} votre attention`
+          : "Rien d'urgent à signaler aujourd'hui"}
+      </h2>
+      {points.length === 0 ? (
+        <p className="text-[13px] text-muted">Stocks, trésorerie, ventes et clients : aucun signal d'alerte.</p>
+      ) : (
+        <ul className="grid gap-2 lg:grid-cols-2">
+          {points.map((p) => {
+            const style = STYLE_NIVEAU[p.niveau] ?? STYLE_NIVEAU.info;
+            return (
+              <li key={p.titre} className="flex flex-col rounded-xl border border-line bg-surface p-3">
+                <p className="flex items-center gap-2 text-[13px] font-semibold text-ink">
+                  <span className={`inline-block h-2 w-2 shrink-0 rounded-full ${style.pastille}`} />
+                  <span className={`text-[11px] font-medium uppercase tracking-wide ${style.texte}`}>{style.libelle}</span>
+                  {p.titre}
+                </p>
+                <p className="mt-1 flex-1 text-[12.5px] leading-snug text-muted">{p.detail}</p>
+                <button
+                  type="button"
+                  disabled={desactive}
+                  onClick={() => onQuestion(p.question)}
+                  className="mt-2 self-start text-[12.5px] font-medium text-brand hover:underline disabled:opacity-40"
+                >
+                  Demander au copilote →
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </section>
+  );
+}
+
 export function Copilote() {
   const [messages, setMessages] = useState([]);
   const [saisie, setSaisie] = useState("");
   const [chargement, setChargement] = useState(false);
   const [llm, setLlm] = useState(null);
+  const [briefing, setBriefing] = useState(null);
   const finRef = useRef(null);
 
   useEffect(() => {
     lireFournisseurLlm().then(setLlm).catch(() => setLlm(null));
+    lireBriefing()
+      .then((b) => setBriefing(b.points ?? []))
+      .catch(() => setBriefing(null)); // sans briefing, la discussion reste utilisable
   }, []);
 
   useEffect(() => {
-    finRef.current?.scrollIntoView({ behavior: "smooth" });
+    finRef.current?.scrollIntoView?.({ behavior: "smooth" });
   }, [messages, chargement]);
 
   async function envoyer(e, texte) {
@@ -52,11 +106,15 @@ export function Copilote() {
     const question = (texte ?? saisie).trim();
     if (!question || chargement) return;
 
+    const historique = messages
+      .filter((m) => m.role === "user" || (m.role === "assistant" && m.mode))
+      .slice(-MEMOIRE_MESSAGES)
+      .map((m) => ({ role: m.role, contenu: m.contenu }));
     setMessages((m) => [...m, { role: "user", contenu: question }]);
     setSaisie("");
     setChargement(true);
     try {
-      const reponse = await poserQuestion(question);
+      const reponse = await poserQuestion(question, historique);
       setMessages((m) => [
         ...m,
         {
@@ -78,39 +136,45 @@ export function Copilote() {
   }
 
   return (
-    <div className="flex h-[calc(100svh-8rem)] flex-col">
-      <PageHeader
-        icon={IconChat}
-        eyebrow="Module mutualisé"
-        title="Assistant Copilote"
-        subtitle="Posez vos questions en langage courant. Le copilote lit vos données (ventes, stocks, trésorerie, clients), fait les calculs nécessaires — prévisions, simulations « et si », quantités à commander — et vous répond avec des conseils concrets. Les données lues et les calculs effectués sont indiqués sous chaque réponse."
-      />
-
-      {llm && (
-        <div className="mb-3 rounded-xl border border-line bg-surface px-4 py-2 text-xs text-muted" data-testid="fournisseur-llm">
-          {llm.configure ? (
-            <span>
-              LLM utilisé : <strong className="text-ink">{llm.fournisseur}</strong> · {llm.modele}{" "}
-              <span className="opacity-70">(clé lue dans {llm.source})</span>
-            </span>
-          ) : (
-            <span>Aucune clé API LLM dans le .env : le copilote répond par synthèse factuelle locale.</span>
-          )}
-          {llm.avertissements?.map((a) => (
-            <p key={a} className="mt-1 text-amber-700">⚠️ {a}</p>
-          ))}
+    <div className="flex h-[calc(100svh-4.5rem)] flex-col gap-3">
+      {/* En-tête compact : la place va à la discussion. */}
+      <header className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1">
+        <div className="flex items-center gap-3">
+          <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-brand-light text-brand">
+            <IconChat width={18} height={18} />
+          </span>
+          <div>
+            <h1 className="font-display text-lg font-bold text-ink">Assistant Copilote</h1>
+            <p className="text-xs text-muted">
+              Lit vos données, fait les calculs (prévisions, simulations, commandes) et vous conseille.
+            </p>
+          </div>
         </div>
-      )}
+        {llm && (
+          <p className="text-[11px] text-muted" data-testid="fournisseur-llm">
+            {llm.configure ? (
+              <>
+                LLM : <strong className="text-ink">{llm.fournisseur}</strong> · {llm.modele}
+                {llm.source && <span className="opacity-70"> (clé : {llm.source})</span>}
+              </>
+            ) : (
+              "Aucune clé API LLM : synthèse factuelle locale."
+            )}
+            {llm.avertissements?.map((a) => (
+              <span key={a} className="block text-amber-700">⚠️ {a}</span>
+            ))}
+          </p>
+        )}
+      </header>
 
-      <div className="flex flex-1 flex-col overflow-hidden rounded-2xl border border-line bg-surface shadow-[var(--shadow-card)]">
-        <div className="flex-1 space-y-4 overflow-y-auto p-5 sm:p-6">
+      <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl border border-line bg-surface shadow-[var(--shadow-card)]">
+        <div className="flex-1 space-y-4 overflow-y-auto p-4 sm:p-6">
+          <Briefing points={briefing} onQuestion={(q) => envoyer(null, q)} desactive={chargement} />
+
           {messages.length === 0 && (
-            <div className="flex h-full flex-col items-center justify-center text-center text-muted">
-              <span className="focus-ring mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-brand-light text-brand">
-                <IconChat width={22} height={22} />
-              </span>
+            <div className="flex flex-col items-center py-6 text-center text-muted">
               <p className="mb-3 text-sm">Posez une question sur vos ventes, stocks, trésorerie ou clients. Par exemple :</p>
-              <div className="flex max-w-xl flex-wrap justify-center gap-2" data-testid="exemples-questions">
+              <div className="flex max-w-2xl flex-wrap justify-center gap-2" data-testid="exemples-questions">
                 {EXEMPLES.map((ex) => (
                   <button
                     key={ex}
@@ -128,21 +192,15 @@ export function Copilote() {
           {messages.map((m, i) => (
             <div key={i} className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}>
               <div
-                className={`max-w-[85%] whitespace-pre-wrap rounded-2xl px-4 py-3 text-sm leading-relaxed ${
+                className={`rounded-2xl px-4 py-3 text-sm leading-relaxed ${
                   m.role === "user"
-                    ? "bg-brand text-white"
-                    : "border border-line bg-paper text-ink"
+                    ? "max-w-[75%] whitespace-pre-wrap bg-brand text-white"
+                    : "w-full max-w-4xl border border-line bg-paper text-ink"
                 }`}
               >
-                {m.contenu}
-                {m.role === "assistant" && m.mode && (
-                  <p className="mt-2 border-t border-line pt-1.5 text-[11px] text-muted" data-testid="origine-reponse">
-                    {ORIGINE[m.mode]}
-                    {m.fournisseur ? ` · ${m.fournisseur}${m.modele ? ` (${m.modele})` : ""}` : ""}
-                  </p>
-                )}
-                {m.outils?.length > 0 && (
-                  <div className="mt-1.5 text-[11px] text-muted" data-testid="outils-utilises">
+                {m.role === "user" ? m.contenu : <Markdown texte={m.contenu} />}
+                {m.role === "assistant" && m.outils?.length > 0 && (
+                  <div className="mt-3 border-t border-line pt-2 text-[11px] text-muted" data-testid="outils-utilises">
                     <p>Calculs effectués :</p>
                     <ul className="mt-0.5 space-y-0.5">
                       {m.outils.map((o, j) => (
@@ -172,15 +230,21 @@ export function Copilote() {
                     ))}
                   </details>
                 )}
+                {m.role === "assistant" && m.mode && (
+                  <p className="mt-2 text-[11px] text-muted" data-testid="origine-reponse">
+                    {ORIGINE[m.mode]}
+                    {m.fournisseur ? ` · ${m.fournisseur}${m.modele ? ` (${m.modele})` : ""}` : ""}
+                  </p>
+                )}
               </div>
             </div>
           ))}
 
           {chargement && (
             <div className="flex justify-start">
-              <div className="flex items-center gap-2 rounded-2xl border border-line bg-paper px-4 py-3 text-sm text-muted">
+              <div className="flex items-center gap-2 rounded-2xl border border-line bg-paper px-4 py-3 text-sm text-muted" role="status">
                 <Spinner size={14} className="text-brand" />
-                Analyse en cours…
+                Le copilote analyse vos données et fait les calculs…
               </div>
             </div>
           )}
@@ -192,13 +256,13 @@ export function Copilote() {
             value={saisie}
             onChange={(e) => setSaisie(e.target.value)}
             placeholder="Posez votre question…"
-            className="flex-1 rounded-xl border border-line px-4 py-2.5 text-sm outline-none focus:border-brand"
+            className="flex-1 rounded-xl border border-line px-4 py-3 text-sm outline-none focus:border-brand"
           />
           <button
             type="submit"
             disabled={!saisie.trim() || chargement}
             aria-label="Envoyer"
-            className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-brand text-white transition-colors hover:bg-brand-dark disabled:opacity-40"
+            className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-brand text-white transition-colors hover:bg-brand-dark disabled:opacity-40"
           >
             <IconSend />
           </button>

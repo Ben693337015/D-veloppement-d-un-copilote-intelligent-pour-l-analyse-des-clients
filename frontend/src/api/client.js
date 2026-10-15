@@ -249,10 +249,18 @@ export async function getComparaisonPrevisions(horizonJours = 30) {
 
 // ── COPILOTE ───────────────────────────────────────────────────────────
 
-export async function poserQuestion(question, clientId) {
-  const payload = { question };
+/** `historique` : derniers échanges [{role: "user"|"assistant", contenu}],
+ * pour que le copilote comprenne une question de suite (« et pour 90 jours ? »). */
+export async function poserQuestion(question, historique = [], clientId) {
+  const payload = { question, historique };
   if (clientId) payload.client_id = clientId;
   const { data } = await http.post("/copilot/chat", payload);
+  return data;
+}
+
+/** Points d'attention calculés sans LLM (stocks, trésorerie, ventes, clients). */
+export async function lireBriefing() {
+  const { data } = await http.get("/copilot/briefing");
   return data;
 }
 

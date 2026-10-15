@@ -1,5 +1,20 @@
 # Journal des modifications
 
+## corrections23 — 15 octobre 2026
+
+**Copilote : finalisation pour la démonstration** (module Maslaw)
+- **Réponses lisibles** : les réponses du LLM (Markdown) sont mises en forme — vrais tableaux, gras, listes — au lieu d'afficher astérisques et « |---| ». Afficheur maison sans dépendance (`frontend/src/components/Markdown.jsx`), aucun HTML injecté.
+- **Page Copilote agrandie** : en-tête compact, zone de discussion sur presque toute la hauteur, réponses sur toute la largeur.
+- **Briefing proactif** (`GET /api/v1/copilot/briefing`, `app/services/copilote_briefing.py`) : à l'ouverture, « N points demandent votre attention » — produits bientôt en rupture, risque de trésorerie, tendance des ventes, clients à risque — avec un bouton « Demander au copilote » par point. Calcul sans LLM : instantané (≈ 0,15 s), fiable, disponible même sans clé API.
+- **Mémoire de conversation** : les 6 derniers échanges sont transmis, pour comprendre « et pour 90 jours ? ».
+- **Temps de réponse** :
+  - prévisions calculées en arrière-plan dès le démarrage de l'API (la première question n'attend plus les 3 modèles) ;
+  - pour un horizon non encore calculé, seul le modèle le plus fiable est entraîné (≈ 3 fois plus rapide) ;
+  - modèles « gpt-oss » (Groq) : effort de raisonnement réduit (`reasoning_effort: low`) sur les 2 appels LLM.
+- Consigne de mise en forme des réponses (phrase de réponse, tableau Markdown valide, 1 à 3 actions).
+- Montants des alertes de trésorerie formatés (« −54 418 »).
+- 270 tests pytest, 32 tests Vitest.
+
 ## corrections22 — 15 octobre 2026
 
 **Copilote : orchestrateur « lire + calculer + recommander »** (module Maslaw)

@@ -66,7 +66,11 @@ SYSTEM_PROMPT = (
     "l'utilisateur les emploie lui-même ou demande explicitement le détail de la méthode. "
     "Ne refais AUCUN calcul toi-même (ni division, ni pourcentage, ni total) : reprends "
     "uniquement les chiffres fournis dans le contexte, les données et les résultats de calcul ; "
-    "si un chiffre utile manque, dis-le plutôt que de l'estimer."
+    "si un chiffre utile manque, dis-le plutôt que de l'estimer. "
+    "Mise en forme (affichée en Markdown) : commence par la réponse en une ou deux phrases, "
+    "puis, si utile, un tableau Markdown valide (ligne d'en-tête, ligne de séparation |---|, "
+    "une ligne par élément, au plus 5 colonnes) ou une liste courte ; termine par 1 à 3 "
+    "actions concrètes. Gras avec parcimonie, pas de titre de plus de 5 mots."
 )
 
 
@@ -406,8 +410,29 @@ def _executer_requetes(
     return resultats, "; ".join(motifs or [m for _, m in echecs])
 
 
+_ECHANGES_MEMOIRE = 6  # derniers messages gardés en mémoire
+_LONGUEUR_MAX_MESSAGE = 700  # caractères par message (borne la taille du prompt)
+
+
+def _texte_historique(historique: list[dict] | None) -> str:
+    """Mémoire courte : derniers échanges, pour qu'une question de suite
+    (« et pour 90 jours ? », « et le produit suivant ? ») soit comprise."""
+    if not historique:
+        return ""
+    lignes = []
+    for m in historique[-_ECHANGES_MEMOIRE:]:
+        contenu = " ".join(str(m.get("contenu", "")).split())
+        if len(contenu) > _LONGUEUR_MAX_MESSAGE:
+            contenu = contenu[:_LONGUEUR_MAX_MESSAGE] + "…"
+        lignes.append(f"{'Utilisateur' if m.get('role') == 'user' else 'Copilote'} : {contenu}")
+    return (
+        "Conversation précédente (à utiliser pour comprendre une question de suite ; "
+        "les chiffres à jour sont ceux fournis plus bas) :\n" + "\n".join(lignes) + "\n\n"
+    )
+
+
 def _planifier(
-    db: Session, question: str
+    db: Session, question: str, historique: list[dict] | None = None
 ) -> tuple[list[sql_agent.ResultatRequete], list[copilote_outils.AppelOutil], str | None]:
     """Orchestrateur du copilote (étape 1) : UN appel LLM de planification
     décide quoi faire pour cette question —
@@ -421,7 +446,7 @@ def _planifier(
     Retourne (résultats SQL, appels d'outils exécutés, motif d'échec éventuel).
     `LLMError` n'est PAS interceptée ici : elle remonte à `answer_question`."""
     prompt_sql = system_prompt_sql()
-    plan = llm_client.generate_completion(prompt_sql, f"Question : {question}")
+    plan = llm_client.generate_completion(prompt_sql, f"{_texte_historique(historique)}Question : {question}")
 
     appels, erreurs_format = copilote_outils.extraire_appels(plan)
     appels = [copilote_outils.executer(db, appel) for appel in appels]
@@ -438,7 +463,7 @@ def _interroger_base(db: Session, question: str) -> tuple[list[sql_agent.Resulta
     return resultats, motif
 
 
-def answer_question(db: Session, question: str) -> dict:
+def answer_question(db: Session, question: str, historique: list[dict] | None = None) -> dict:
     """Point d'entrée de /api/v1/copilot/chat.
 
     Sans fournisseur LLM configuré (cf. `llm_client.resolve_provider`),
@@ -474,7 +499,7 @@ def answer_question(db: Session, question: str) -> dict:
     resultats, appels, motif_echec = [], [], None
     try:
         if settings.COPILOTE_ACCES_BASE:
-            resultats, appels, motif_echec = _planifier(db, question)
+            resultats, appels, motif_echec = _planifier(db, question, historique)
 
         prompt_utilisateur = f"Contexte (indicateurs réels de l'entreprise) :\n{contexte}"
         for i, res in enumerate(resultats, 1):
@@ -493,7 +518,7 @@ def answer_question(db: Session, question: str) -> dict:
                 f"\n\nNote : une partie de l'interrogation de la base a échoué ({motif_echec}). "
                 "Réponds avec les données disponibles et signale ce qui n'a pas pu être extrait."
             )
-        prompt_utilisateur += f"\n\nQuestion : {question}"
+        prompt_utilisateur += f"\n\n{_texte_historique(historique)}Question : {question}"
 
         reponse_llm = llm_client.generate_completion(SYSTEM_PROMPT + _consigne_devise(), prompt_utilisateur)
         modele = llm_client.dernier_modele_utilise() or modele

@@ -92,9 +92,27 @@ def _totaux_hebdomadaires(points: list[dict]) -> list[dict]:
     return semaines
 
 
+def _comparaison_rapide(db: Session, horizon: int) -> dict:
+    """Résultat au format de `comparaison_previsions.comparer_modeles`.
+
+    Temps de réponse : un horizon déjà calculé (30 jours, préchauffé au
+    démarrage) est lu dans le cache. Pour un AUTRE horizon, au lieu
+    d'entraîner les 3 modèles (le plus lent, Prophet, compris), on reprend le
+    modèle le plus fiable sur ces données (connu grâce au calcul à 30 jours)
+    et on n'entraîne que lui : ~3 fois plus rapide, même méthode de choix.
+    La concordance entre méthodes n'est alors pas évaluée (une seule)."""
+    if horizon == 30 or comparaison_previsions.est_en_cache(db, horizon):
+        return comparaison_previsions.comparer_modeles(db, horizon)
+    reference = comparaison_previsions.comparer_modeles(db, 30)
+    meilleur = (reference.get("lecture_dirigeant") or {}).get("modele_retenu")
+    if not meilleur:
+        return comparaison_previsions.comparer_modeles(db, horizon)
+    return comparaison_previsions.calculer_un_modele(db, horizon, meilleur)
+
+
 def prevision_ventes(db: Session, p: ParamsPrevisionVentes) -> dict:
     if p.methode == "auto":
-        comparaison = comparaison_previsions.comparer_modeles(db, p.horizon_jours)
+        comparaison = _comparaison_rapide(db, p.horizon_jours)
         lecture = dict(comparaison.get("lecture_dirigeant") or {})
         retenu = next(
             (m for m in comparaison["modeles"] if m["modele"] == lecture.get("modele_retenu")), None
