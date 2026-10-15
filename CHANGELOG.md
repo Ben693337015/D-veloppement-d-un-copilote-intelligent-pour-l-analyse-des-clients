@@ -1,5 +1,19 @@
 # Journal des modifications
 
+## corrections22 — 15 octobre 2026
+
+**Copilote : orchestrateur « lire + calculer + recommander »** (module Maslaw)
+- Avant, le copilote ne savait que LIRE la base (agent SQL). Il peut maintenant aussi CALCULER à la demande, grâce à 4 outils (`app/services/copilote_outils.py`) qui appellent les services métier existants :
+  - `prevision_ventes` : ventes attendues sur un horizon choisi (7 à 90 jours), en langage métier, avec le détail par semaine ;
+  - `tresorerie_prevue` : solde projeté et alerte par rapport à un seuil choisi ;
+  - `simulation_ventes` : scénario « et si les ventes baissent de 15 % ? », avec l'effet sur la trésorerie (hypothèse affichée) ;
+  - `reapprovisionnement` : jours de stock restants au rythme de vente actuel, urgence et quantité à commander par produit (délai de livraison + couverture souhaitée), avec le coût estimé.
+- Orchestration (`copilot_service._planifier`) : un seul appel LLM de planification choisit des requêtes SQL et/ou des outils (blocs ```outil``` en JSON) ; aucun appel LLM supplémentaire. Format texte : fonctionne avec les 5 fournisseurs, sans « function calling » natif.
+- Sécurité : paramètres validés (Pydantic, bornes) avant tout calcul, au plus 3 outils par question, aucun outil n'écrit en base ; un outil en échec est signalé au LLM sans casser la réponse.
+- Interface Copilote : « Calculs effectués » sous chaque réponse, exemples de questions cliquables, présentation en langage courant.
+- Correctif trésorerie : l'alerte ne dit plus « solde négatif » quand le solde, encore positif, passe seulement sous un seuil critique positif.
+- 262 tests pytest (11 nouveaux), 29 tests Vitest (2 nouveaux).
+
 ## corrections21 — 14 octobre 2026
 
 **Prévision des ventes : vue en langage métier pour les dirigeants, détails techniques en option** (module Maslaw)

@@ -12,6 +12,26 @@ const ORIGINE = {
   secours: "LLM indisponible — synthèse factuelle de secours",
 };
 
+// Exemples affichés quand la conversation est vide : ils montrent les trois
+// capacités du copilote — lire les données, calculer, recommander.
+const EXEMPLES = [
+  "Quel est mon chiffre d'affaires par pays ?",
+  "Combien vais-je vendre dans les 60 prochains jours ?",
+  "Et si mes ventes baissaient de 15 % le mois prochain ?",
+  "Quels produits dois-je commander, et en quelle quantité ?",
+];
+
+/** Paramètres d'un outil en clair (« horizon : 60 jours · variation : −15 % »). */
+function decrireParametres(p = {}) {
+  const morceaux = [];
+  if (p.horizon_jours != null) morceaux.push(`horizon : ${p.horizon_jours} jours`);
+  if (p.variation_pct != null) morceaux.push(`variation : ${p.variation_pct > 0 ? "+" : ""}${p.variation_pct} %`);
+  if (p.seuil_critique) morceaux.push(`seuil : ${p.seuil_critique.toLocaleString("fr-FR")}`);
+  if (p.jours_couverture != null) morceaux.push(`stock visé : ${p.jours_couverture} jours`);
+  if (p.code_produit) morceaux.push(`produit : ${p.code_produit}`);
+  return morceaux.join(" · ");
+}
+
 export function Copilote() {
   const [messages, setMessages] = useState([]);
   const [saisie, setSaisie] = useState("");
@@ -27,9 +47,9 @@ export function Copilote() {
     finRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, chargement]);
 
-  async function envoyer(e) {
-    e.preventDefault();
-    const question = saisie.trim();
+  async function envoyer(e, texte) {
+    e?.preventDefault();
+    const question = (texte ?? saisie).trim();
     if (!question || chargement) return;
 
     setMessages((m) => [...m, { role: "user", contenu: question }]);
@@ -47,6 +67,7 @@ export function Copilote() {
           modele: reponse.modele,
           requetesSql: reponse.requetes_sql?.length ? reponse.requetes_sql : reponse.requete_sql ? [reponse.requete_sql] : [],
           lignesBase: reponse.lignes_base,
+          outils: reponse.outils_utilises ?? [],
         },
       ]);
     } catch (err) {
@@ -62,7 +83,7 @@ export function Copilote() {
         icon={IconChat}
         eyebrow="Module mutualisé"
         title="Assistant Copilote"
-        subtitle="Répond à partir des indicateurs réels des deux modules (KPIs, alertes, segments, prévisions). Avec un LLM configuré, il consulte aussi toutes les données de l'application : la base en lecture seule (jusqu'à 3 requêtes SQL vérifiées, visibles sous la réponse), les prévisions des 3 modèles et l'historique des segmentations ; sinon, une synthèse factuelle est affichée."
+        subtitle="Posez vos questions en langage courant. Le copilote lit vos données (ventes, stocks, trésorerie, clients), fait les calculs nécessaires — prévisions, simulations « et si », quantités à commander — et vous répond avec des conseils concrets. Les données lues et les calculs effectués sont indiqués sous chaque réponse."
       />
 
       {llm && (
@@ -88,7 +109,19 @@ export function Copilote() {
               <span className="focus-ring mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-brand-light text-brand">
                 <IconChat width={22} height={22} />
               </span>
-              <p className="text-sm">Posez une question sur vos ventes, stocks, trésorerie ou clients — par exemple « CA par pays » ou « produits jamais vendus ».</p>
+              <p className="mb-3 text-sm">Posez une question sur vos ventes, stocks, trésorerie ou clients. Par exemple :</p>
+              <div className="flex max-w-xl flex-wrap justify-center gap-2" data-testid="exemples-questions">
+                {EXEMPLES.map((ex) => (
+                  <button
+                    key={ex}
+                    type="button"
+                    onClick={() => envoyer(null, ex)}
+                    className="rounded-full border border-line bg-paper px-3 py-1.5 text-xs text-ink transition-colors hover:border-brand hover:text-brand"
+                  >
+                    {ex}
+                  </button>
+                ))}
+              </div>
             </div>
           )}
 
@@ -107,6 +140,20 @@ export function Copilote() {
                     {ORIGINE[m.mode]}
                     {m.fournisseur ? ` · ${m.fournisseur}${m.modele ? ` (${m.modele})` : ""}` : ""}
                   </p>
+                )}
+                {m.outils?.length > 0 && (
+                  <div className="mt-1.5 text-[11px] text-muted" data-testid="outils-utilises">
+                    <p>Calculs effectués :</p>
+                    <ul className="mt-0.5 space-y-0.5">
+                      {m.outils.map((o, j) => (
+                        <li key={j} className={o.statut === "erreur" ? "text-danger" : undefined}>
+                          {o.statut === "erreur" ? "✗" : "✓"} {o.libelle}
+                          {decrireParametres(o.parametres) && ` (${decrireParametres(o.parametres)})`}
+                          {o.statut === "erreur" && " — calcul impossible"}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
                 )}
                 {m.requetesSql?.length > 0 && (
                   <details className="mt-1.5 text-[11px] text-muted" data-testid="requete-sql">

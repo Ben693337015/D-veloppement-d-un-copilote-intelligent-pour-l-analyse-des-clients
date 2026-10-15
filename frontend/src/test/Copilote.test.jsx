@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { vi } from "vitest";
 import { lireFournisseurLlm, poserQuestion } from "../api/client";
@@ -101,4 +101,30 @@ test("affiche le fournisseur retenu d'après le .env et ses avertissements", asy
   expect(bandeau).toHaveTextContent(/openai · gpt-4o-mini/i);
   expect(bandeau).toHaveTextContent(/OPENAI_API_KEY/);
   expect(bandeau).toHaveTextContent(/n'est pas un modèle openai/i);
+});
+
+test("affiche les calculs effectués par le copilote, en clair", async () => {
+  poserQuestion.mockResolvedValueOnce({
+    reponse: "Commandez 320 unités du produit A.",
+    mode: "llm",
+    fournisseur: "openai",
+    outils_utilises: [
+      { nom: "simulation_ventes", libelle: "Simulation « et si »", parametres: { variation_pct: -15, horizon_jours: 30, seuil_critique: 0 }, statut: "ok" },
+      { nom: "prevision_ventes", libelle: "Prévision des ventes", parametres: { horizon_jours: 999 }, statut: "erreur", erreur: "hors bornes" },
+    ],
+  });
+  await poser("Et si mes ventes baissaient de 15 % ?");
+  const outils = await screen.findByTestId("outils-utilises");
+  expect(outils).toHaveTextContent("✓ Simulation « et si » (horizon : 30 jours · variation : -15 %)");
+  expect(outils).toHaveTextContent("✗ Prévision des ventes (horizon : 999 jours) — calcul impossible");
+});
+
+test("un exemple de question cliquable envoie directement la question", async () => {
+  poserQuestion.mockResolvedValueOnce({ reponse: "Environ 4 millions.", mode: "llm", fournisseur: "openai" });
+  render(<Copilote />);
+  const exemples = screen.getByTestId("exemples-questions");
+  await userEvent.setup().click(within(exemples).getByRole("button", { name: /60 prochains jours/i }));
+  expect(poserQuestion).toHaveBeenLastCalledWith("Combien vais-je vendre dans les 60 prochains jours ?");
+  expect(await screen.findByText("Environ 4 millions.")).toBeInTheDocument();
+  expect(screen.queryByTestId("outils-utilises")).not.toBeInTheDocument();
 });

@@ -16,6 +16,16 @@ class SourceExplicabilite(BaseModel):
     contribution: float  # valeur SHAP/LIME
 
 
+class OutilUtilise(BaseModel):
+    """Calcul effectué par le copilote pour répondre (cf. copilote_outils)."""
+
+    nom: str
+    libelle: str
+    parametres: dict = {}
+    statut: Literal["ok", "erreur"] = "ok"
+    erreur: str | None = None
+
+
 class CopilotChatResponse(BaseModel):
     reponse: str
     sources: list[str] = []
@@ -31,3 +41,5 @@ class CopilotChatResponse(BaseModel):
     requete_sql: str | None = None  # première requête (compatibilité)
     requetes_sql: list[str] = []  # toutes les requêtes exécutées (jusqu'à 3)
     lignes_base: int | None = None
+    # Outils de calcul exécutés (prévision, simulation, réapprovisionnement…).
+    outils_utilises: list[OutilUtilise] = []

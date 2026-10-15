@@ -196,8 +196,16 @@ def get_alerte_tresorerie(
 
     if solde_projete < seuil_critique:
         niveau = "risque_deficit"
+        # Le message dépend du seuil : « négatif » n'est vrai que si le solde
+        # est réellement sous zéro (un seuil critique positif peut être franchi
+        # avec un solde encore positif).
+        constat = (
+            f"Solde projeté négatif ({solde_projete:.0f})"
+            if solde_projete < 0
+            else f"Solde projeté sous votre seuil critique de {seuil_critique:.0f} ({solde_projete:.0f})"
+        )
         message = (
-            f"Solde projeté négatif ({solde_projete:.0f}) au {pire_point['date_prevision']} — "
+            f"{constat} au {pire_point['date_prevision']} — "
             f"risque de déficit de trésorerie dans les {horizon_jours} prochains jours."
         )
     elif solde_projete < seuil_critique + marge_vigilance:

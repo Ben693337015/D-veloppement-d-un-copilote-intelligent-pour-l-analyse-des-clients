@@ -35,6 +35,7 @@ from app.models import HistoriqueSegmentation
 from app.services import (
     analytics_service,
     comparaison_previsions,
+    copilote_outils,
     forecasting_service,
     llm_client,
     marketing_service,
@@ -86,11 +87,18 @@ def system_prompt_sql() -> str:
         "- arrondis les montants avec ROUND(x::numeric, 2) ;\n"
         "- les métriques des segmentations passées sont dans historique_segmentation "
         "(la plus récente : ORDER BY date_execution DESC LIMIT 1).\n"
-        "Les prévisions (ventes par Prophet/ARIMA/XGBoost, trésorerie) ne sont PAS en base : "
-        "elles sont déjà fournies dans le contexte.\n"
-        "Si la question ne nécessite pas d'interroger la base (salutation, explication d'une "
-        "méthode, prévision), réponds exactement : AUCUNE.\n"
-        "Sinon réponds UNIQUEMENT avec la ou les requêtes, chacune dans un bloc ```sql```.\n\n"
+        "Les prévisions, simulations et recommandations ne sont PAS en base : pour PRÉVOIR "
+        "(ventes, trésorerie, sur un horizon ou un seuil donné), SIMULER (« et si les ventes "
+        "baissent de 10 % ? ») ou RECOMMANDER (quoi commander, combien), utilise un OUTIL DE "
+        "CALCUL, dans un bloc ```outil``` contenant un objet JSON, par exemple :\n"
+        "```outil\n{\"nom\": \"prevision_ventes\", \"parametres\": {\"horizon_jours\": 60}}\n```\n"
+        f"Au plus {copilote_outils.APPELS_MAX} outils. Outils disponibles :\n"
+        + copilote_outils.catalogue_texte()
+        + "\nTu peux combiner requêtes SQL (lire le passé) et outils (prévoir, simuler, "
+        "recommander) dans la même réponse.\n"
+        "Si la question ne nécessite ni la base ni un outil (salutation, explication d'une "
+        "méthode), réponds exactement : AUCUNE.\n"
+        "Sinon réponds UNIQUEMENT avec les blocs ```sql``` et/ou ```outil```.\n\n"
         "Schéma :\n" + sql_agent.schema_texte()
     )
 
@@ -340,19 +348,12 @@ def _executer(db: Session, sql: str) -> tuple[sql_agent.ResultatRequete | None, 
         return None, f"erreur SQL : {str(getattr(exc, 'orig', exc)).strip().splitlines()[0][:300]}"
 
 
-def _interroger_base(db: Session, question: str) -> tuple[list[sql_agent.ResultatRequete], str | None]:
-    """Étapes 1-2 de l'accès à la base (cf. sql_agent) : le LLM écrit de 1 à
-    REQUETES_MAX requêtes, l'application les valide et les exécute en lecture
-    seule ; celles refusées ou en erreur sont renvoyées au LLM avec l'erreur,
-    qui les corrige UNE fois (les requêtes réussies sont conservées).
-
-    Retourne (résultats, motif d'échec éventuel). Liste vide sans motif : le
-    LLM a jugé que la question n'avait pas besoin de la base. `LLMError`
-    n'est PAS interceptée ici : elle remonte à `answer_question`."""
-    prompt_sql = system_prompt_sql()
-    requetes = sql_agent.extraire_requetes(llm_client.generate_completion(prompt_sql, f"Question : {question}"))
-    if not requetes:
-        return [], None
+def _executer_requetes(
+    db: Session, question: str, prompt_sql: str, requetes: list[str]
+) -> tuple[list[sql_agent.ResultatRequete], str | None]:
+    """Exécute les requêtes SQL du plan ; celles refusées ou en erreur sont
+    renvoyées au LLM avec l'erreur, qui les corrige UNE fois (les requêtes
+    réussies sont conservées). Retourne (résultats, motif d'échec éventuel)."""
     resultats, echecs = [], []
     for sql in requetes:
         res, motif = _executer(db, sql)
@@ -374,6 +375,38 @@ def _interroger_base(db: Session, question: str) -> tuple[list[sql_agent.Resulta
     if not motifs and len(resultats) > 0:
         return resultats, None
     return resultats, "; ".join(motifs or [m for _, m in echecs])
+
+
+def _planifier(
+    db: Session, question: str
+) -> tuple[list[sql_agent.ResultatRequete], list[copilote_outils.AppelOutil], str | None]:
+    """Orchestrateur du copilote (étape 1) : UN appel LLM de planification
+    décide quoi faire pour cette question —
+      - LIRE des données passées : requêtes SQL en lecture seule (sql_agent) ;
+      - CALCULER : outils de prévision, simulation « et si », réapprovisionnement
+        (copilote_outils), qui appellent les services métier ;
+      - rien (salutation, explication) : AUCUNE.
+    SQL et outils peuvent être combinés dans la même réponse. Aucun appel LLM
+    de plus qu'avec le SQL seul (sauf la correction éventuelle d'une requête).
+
+    Retourne (résultats SQL, appels d'outils exécutés, motif d'échec éventuel).
+    `LLMError` n'est PAS interceptée ici : elle remonte à `answer_question`."""
+    prompt_sql = system_prompt_sql()
+    plan = llm_client.generate_completion(prompt_sql, f"Question : {question}")
+
+    appels, erreurs_format = copilote_outils.extraire_appels(plan)
+    appels = [copilote_outils.executer(db, appel) for appel in appels]
+
+    requetes = sql_agent.extraire_requetes(plan)
+    resultats, motif = _executer_requetes(db, question, prompt_sql, requetes) if requetes else ([], None)
+    motifs = [m for m in (motif, *erreurs_format) if m]
+    return resultats, appels, "; ".join(motifs) or None
+
+
+def _interroger_base(db: Session, question: str) -> tuple[list[sql_agent.ResultatRequete], str | None]:
+    """Compatibilité : partie SQL seule de `_planifier`."""
+    resultats, _appels, motif = _planifier(db, question)
+    return resultats, motif
 
 
 def answer_question(db: Session, question: str) -> dict:
@@ -409,16 +442,22 @@ def answer_question(db: Session, question: str) -> dict:
 
     fournisseur, _cle_api, modele = resolu
     llm_client._local.modele = None  # modèle réellement utilisé (secours éventuel), cf. llm_client
-    resultats, motif_echec = [], None
+    resultats, appels, motif_echec = [], [], None
     try:
         if settings.COPILOTE_ACCES_BASE:
-            resultats, motif_echec = _interroger_base(db, question)
+            resultats, appels, motif_echec = _planifier(db, question)
 
         prompt_utilisateur = f"Contexte (indicateurs réels de l'entreprise) :\n{contexte}"
         for i, res in enumerate(resultats, 1):
             prompt_utilisateur += (
                 f"\n\nDonnées extraites de la base pour cette question — requête {i} "
                 f"(exécutée :\n{res.sql}) :\n{sql_agent.formater_pour_prompt(res)}"
+            )
+        for appel in appels:
+            prompt_utilisateur += (
+                "\n\nRésultat d'un calcul effectué pour cette question (chiffres exacts, à utiliser "
+                "en priorité et à reformuler en langage métier) — "
+                + copilote_outils.formater_pour_prompt(appel)
             )
         if motif_echec:
             prompt_utilisateur += (
@@ -432,6 +471,7 @@ def answer_question(db: Session, question: str) -> dict:
         sources = ["analytics_service", "marketing_service", "forecasting_service"]
         if resultats:
             sources.append("base:sql")
+        sources += [f"outil:{a.nom}" for a in appels if a.resultat is not None]
         return {
             "reponse": reponse_llm,
             "sources": [*sources, f"llm:{fournisseur}"],
@@ -442,6 +482,11 @@ def answer_question(db: Session, question: str) -> dict:
             "requete_sql": resultats[0].sql if resultats else None,
             "requetes_sql": [r.sql for r in resultats],
             "lignes_base": sum(len(r.lignes) for r in resultats) if resultats else None,
+            "outils_utilises": [
+                {"nom": a.nom, "libelle": a.libelle or a.nom, "parametres": a.parametres,
+                 "statut": "erreur" if a.erreur else "ok", "erreur": a.erreur}
+                for a in appels
+            ],
         }
     except llm_client.LLMError as exc:
         return {
