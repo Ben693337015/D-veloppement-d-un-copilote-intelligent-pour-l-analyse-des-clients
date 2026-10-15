@@ -304,3 +304,14 @@ def test_lecture_dirigeant_base_vide(client, db_session):
     lecture = client.get("/api/v1/analytics/forecast/sales/comparaison").json()["lecture_dirigeant"]
     assert lecture["disponible"] is False
     assert "Importez vos ventes" in lecture["conseils"][0]
+
+
+def test_calculer_un_modele_reel(db_session, sans_prophet):
+    """Chemin rapide du copilote : un seul modèle entraîné, même lecture métier."""
+    _ventes(db_session)
+    r = cp.calculer_un_modele(db_session, 21, "arima")
+    assert [m["modele"] for m in r["modeles"]] == ["arima"] and len(r["modeles"][0]["points"]) == 21
+    lecture = r["lecture_dirigeant"]
+    assert lecture["disponible"] is True and lecture["modele_retenu"] == "arima"
+    assert lecture["concordance"] is None  # une seule méthode : rien à comparer
+    assert not cp.est_en_cache(db_session, 21)  # pas mis en cache

@@ -52,7 +52,9 @@ def test_contexte_contient_segmentation_et_previsions_3_modeles(client, db_sessi
     client.post("/api/v1/marketing/rfm/run", json={"k_min": 2, "k_max": 3})
     contexte = copilot_service.build_context_snapshot(db_session)
     assert "Dernière segmentation" in contexte and "Diagnostic par k testé" in contexte
-    assert "Prévision des ventes à 30 jours, 3 modèles comparés" in contexte
+    # Lecture métier en tête (corrections22), détail des 3 modèles conservé et signalé comme technique.
+    assert "Prévision des ventes à 30 jours (à présenter en langage métier)" in contexte
+    assert "[Détail technique" in contexte
     for nom in ("Prophet", "ARIMA", "XGBoost"):
         assert f"  - {nom} (" in contexte
 

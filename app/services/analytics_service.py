@@ -151,6 +151,11 @@ def get_stock_alertes(db: Session) -> list[dict]:
     return alertes
 
 
+def _montant(x: float) -> str:
+    """-54418.3 -> « −54 418 » (séparateur de milliers, lisible par un dirigeant)."""
+    return f"{x:,.0f}".replace(",", " ").replace("-", "−")
+
+
 def get_alerte_tresorerie(
     prevision: dict,
     horizon_jours: int,
@@ -196,14 +201,22 @@ def get_alerte_tresorerie(
 
     if solde_projete < seuil_critique:
         niveau = "risque_deficit"
+        # Le message dépend du seuil : « négatif » n'est vrai que si le solde
+        # est réellement sous zéro (un seuil critique positif peut être franchi
+        # avec un solde encore positif).
+        constat = (
+            f"Solde projeté négatif ({_montant(solde_projete)})"
+            if solde_projete < 0
+            else f"Solde projeté sous votre seuil critique de {_montant(seuil_critique)} ({_montant(solde_projete)})"
+        )
         message = (
-            f"Solde projeté négatif ({solde_projete:.0f}) au {pire_point['date_prevision']} — "
+            f"{constat} au {pire_point['date_prevision']} — "
             f"risque de déficit de trésorerie dans les {horizon_jours} prochains jours."
         )
     elif solde_projete < seuil_critique + marge_vigilance:
         niveau = "vigilance"
         message = (
-            f"Solde projeté proche du seuil critique ({solde_projete:.0f} au "
+            f"Solde projeté proche du seuil critique ({_montant(solde_projete)} au "
             f"{pire_point['date_prevision']}) — à surveiller."
         )
     else:

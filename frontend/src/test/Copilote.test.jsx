@@ -1,12 +1,13 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { vi } from "vitest";
-import { lireFournisseurLlm, poserQuestion } from "../api/client";
+import { lireBriefing, lireFournisseurLlm, poserQuestion } from "../api/client";
 import { Copilote } from "../pages/Copilote";
 
 vi.mock("../api/client", () => ({
   poserQuestion: vi.fn(),
   lireFournisseurLlm: vi.fn().mockResolvedValue({ configure: false, avertissements: [] }),
+  lireBriefing: vi.fn().mockResolvedValue({ points: [] }),
 }));
 
 async function poser(question) {
@@ -101,4 +102,77 @@ test("affiche le fournisseur retenu d'après le .env et ses avertissements", asy
   expect(bandeau).toHaveTextContent(/openai · gpt-4o-mini/i);
   expect(bandeau).toHaveTextContent(/OPENAI_API_KEY/);
   expect(bandeau).toHaveTextContent(/n'est pas un modèle openai/i);
+});
+
+test("affiche les calculs effectués par le copilote, en clair", async () => {
+  poserQuestion.mockResolvedValueOnce({
+    reponse: "Commandez 320 unités du produit A.",
+    mode: "llm",
+    fournisseur: "openai",
+    outils_utilises: [
+      { nom: "simulation_ventes", libelle: "Simulation « et si »", parametres: { variation_pct: -15, horizon_jours: 30, seuil_critique: 0 }, statut: "ok" },
+      { nom: "prevision_ventes", libelle: "Prévision des ventes", parametres: { horizon_jours: 999 }, statut: "erreur", erreur: "hors bornes" },
+    ],
+  });
+  await poser("Et si mes ventes baissaient de 15 % ?");
+  const outils = await screen.findByTestId("outils-utilises");
+  expect(outils).toHaveTextContent("✓ Simulation « et si » (horizon : 30 jours · variation : -15 %)");
+  expect(outils).toHaveTextContent("✗ Prévision des ventes (horizon : 999 jours) — calcul impossible");
+});
+
+test("un exemple de question cliquable envoie directement la question", async () => {
+  poserQuestion.mockResolvedValueOnce({ reponse: "Environ 4 millions.", mode: "llm", fournisseur: "openai" });
+  render(<Copilote />);
+  const exemples = screen.getByTestId("exemples-questions");
+  await userEvent.setup().click(within(exemples).getByRole("button", { name: /60 prochains jours/i }));
+  expect(poserQuestion).toHaveBeenLastCalledWith("Combien vais-je vendre dans les 60 prochains jours ?", []);
+  expect(await screen.findByText("Environ 4 millions.")).toBeInTheDocument();
+  expect(screen.queryByTestId("outils-utilises")).not.toBeInTheDocument();
+});
+
+
+test("affiche les réponses en Markdown : tableau et gras, sans astérisques", async () => {
+  poserQuestion.mockResolvedValueOnce({
+    reponse: "**Impact** d'une baisse :\n\n| Élément | Avant | Après |\n|---|---|---|\n| Ventes | 65 927 | 56 038 |\n\n- Agir **vite**\n- Relancer",
+    mode: "llm",
+    fournisseur: "groq",
+  });
+  await poser("Et si ?");
+  const tableau = await screen.findByRole("table");
+  expect(within(tableau).getAllByRole("columnheader").map((c) => c.textContent)).toEqual(["Élément", "Avant", "Après"]);
+  expect(within(tableau).getByText("56 038")).toBeInTheDocument();
+  expect(screen.getByText("Impact").tagName).toBe("STRONG");
+  expect(screen.getAllByRole("listitem").map((li) => li.textContent)).toEqual(["Agir vite", "Relancer"]);
+  expect(document.body.textContent).not.toMatch(/\*\*|\|---/);
+});
+
+test("envoie les derniers échanges comme mémoire de conversation", async () => {
+  poserQuestion
+    .mockResolvedValueOnce({ reponse: "Environ 4 millions sur 30 jours.", mode: "llm", fournisseur: "groq" })
+    .mockResolvedValueOnce({ reponse: "Environ 12 millions sur 90 jours.", mode: "llm", fournisseur: "groq" });
+  const user = userEvent.setup();
+  render(<Copilote />);
+  const champ = screen.getByPlaceholderText(/posez votre question/i);
+  await user.type(champ, "Ventes sur 30 jours ?{enter}");
+  await screen.findByText("Environ 4 millions sur 30 jours.");
+  await user.type(champ, "Et pour 90 jours ?{enter}");
+  await screen.findByText("Environ 12 millions sur 90 jours.");
+  expect(poserQuestion).toHaveBeenLastCalledWith("Et pour 90 jours ?", [
+    { role: "user", contenu: "Ventes sur 30 jours ?" },
+    { role: "assistant", contenu: "Environ 4 millions sur 30 jours." },
+  ]);
+});
+
+test("le briefing affiche les points d'attention et permet de poser la question associée", async () => {
+  lireBriefing.mockResolvedValueOnce({
+    points: [{ niveau: "urgent", domaine: "stocks", titre: "2 produit(s) bientôt en rupture", detail: "Produit A, Produit B.", question: "Quels produits dois-je commander, et en quelle quantité ?" }],
+  });
+  poserQuestion.mockResolvedValueOnce({ reponse: "Commandez 320 unités.", mode: "llm", fournisseur: "groq" });
+  render(<Copilote />);
+  const briefing = await screen.findByTestId("briefing");
+  expect(briefing).toHaveTextContent("1 point demande votre attention");
+  expect(briefing).toHaveTextContent("Urgent2 produit(s) bientôt en rupture");
+  await userEvent.setup().click(within(briefing).getByRole("button", { name: /demander au copilote/i }));
+  expect(poserQuestion).toHaveBeenLastCalledWith("Quels produits dois-je commander, et en quelle quantité ?", []);
+  expect(await screen.findByText("Commandez 320 unités.")).toBeInTheDocument();
 });

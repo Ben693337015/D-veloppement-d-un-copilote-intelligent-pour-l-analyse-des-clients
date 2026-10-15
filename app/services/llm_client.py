@@ -389,20 +389,32 @@ def _appel_anthropic(cle_api: str, modele: str, system_prompt: str, user_message
     return "\n".join(blocs_texte).strip()
 
 
+def _corps_compatible_openai(fournisseur: str, modele: str, system_prompt: str, user_message: str) -> dict:
+    corps = {
+        "model": modele,
+        "max_tokens": MAX_TOKENS_REPONSE,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_message},
+        ],
+    }
+    # Temps de réponse : les modèles « gpt-oss » (Groq, OpenRouter) raisonnent
+    # avant de répondre ; avec l'effort par défaut, chaque appel du copilote
+    # (planification puis réponse) prenait plusieurs secondes de plus. Les
+    # tâches du copilote (choisir une requête/un outil, reformuler des chiffres
+    # déjà calculés) n'ont pas besoin d'un raisonnement long.
+    if "gpt-oss" in modele and fournisseur in ("groq", "openrouter"):
+        corps["reasoning_effort"] = "low"
+    return corps
+
+
 def _appel_compatible_openai(
     fournisseur: str, cle_api: str, modele: str, system_prompt: str, user_message: str
 ) -> str:
     reponse = httpx.post(
         _url(fournisseur, "/chat/completions"),
         headers={"Authorization": f"Bearer {cle_api}", "content-type": "application/json"},
-        json={
-            "model": modele,
-            "max_tokens": MAX_TOKENS_REPONSE,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_message},
-            ],
-        },
+        json=_corps_compatible_openai(fournisseur, modele, system_prompt, user_message),
         timeout=TIMEOUT_SECONDES,
     )
     _lever_si_erreur_http(reponse, fournisseur)

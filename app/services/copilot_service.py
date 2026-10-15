@@ -35,6 +35,7 @@ from app.models import HistoriqueSegmentation
 from app.services import (
     analytics_service,
     comparaison_previsions,
+    copilote_outils,
     forecasting_service,
     llm_client,
     marketing_service,
@@ -62,8 +63,27 @@ SYSTEM_PROMPT = (
     "— dis « la prévision la plus fiable » plutôt que le nom d'un modèle (Prophet, ARIMA, "
     "XGBoost), « écart habituel d'environ X par jour » plutôt que RMSE ou MAE, « fourchette "
     "probable » plutôt qu'« intervalle de confiance ». Ne cite ces termes techniques que si "
-    "l'utilisateur les emploie lui-même ou demande explicitement le détail de la méthode."
+    "l'utilisateur les emploie lui-même ou demande explicitement le détail de la méthode. "
+    "Ne refais AUCUN calcul toi-même (ni division, ni pourcentage, ni total) : reprends "
+    "uniquement les chiffres fournis dans le contexte, les données et les résultats de calcul ; "
+    "si un chiffre utile manque, dis-le plutôt que de l'estimer. "
+    "Mise en forme (affichée en Markdown) : commence par la réponse en une ou deux phrases, "
+    "puis, si utile, un tableau Markdown valide (ligne d'en-tête, ligne de séparation |---|, "
+    "une ligne par élément, au plus 5 colonnes) ou une liste courte ; termine par 1 à 3 "
+    "actions concrètes. Gras avec parcimonie, pas de titre de plus de 5 mots."
 )
+
+
+def _consigne_devise() -> str:
+    """La devise n'apparaît pas dans les fichiers importés : sans DEVISE
+    configurée, le LLM ne doit pas en inventer une (constaté : « € » ajouté
+    sur des données sans devise)."""
+    if settings.DEVISE:
+        return f" Les montants sont exprimés en {settings.DEVISE}."
+    return (
+        " La devise des montants n'est pas connue : écris les montants SANS symbole monétaire "
+        "(ni €, ni $, ni FCFA)."
+    )
 
 # Étape 1 de l'accès à la base : le LLM traduit la question en SQL.
 def system_prompt_sql() -> str:
@@ -86,11 +106,18 @@ def system_prompt_sql() -> str:
         "- arrondis les montants avec ROUND(x::numeric, 2) ;\n"
         "- les métriques des segmentations passées sont dans historique_segmentation "
         "(la plus récente : ORDER BY date_execution DESC LIMIT 1).\n"
-        "Les prévisions (ventes par Prophet/ARIMA/XGBoost, trésorerie) ne sont PAS en base : "
-        "elles sont déjà fournies dans le contexte.\n"
-        "Si la question ne nécessite pas d'interroger la base (salutation, explication d'une "
-        "méthode, prévision), réponds exactement : AUCUNE.\n"
-        "Sinon réponds UNIQUEMENT avec la ou les requêtes, chacune dans un bloc ```sql```.\n\n"
+        "Les prévisions, simulations et recommandations ne sont PAS en base : pour PRÉVOIR "
+        "(ventes, trésorerie, sur un horizon ou un seuil donné), SIMULER (« et si les ventes "
+        "baissent de 10 % ? ») ou RECOMMANDER (quoi commander, combien), utilise un OUTIL DE "
+        "CALCUL, dans un bloc ```outil``` contenant un objet JSON, par exemple :\n"
+        "```outil\n{\"nom\": \"prevision_ventes\", \"parametres\": {\"horizon_jours\": 60}}\n```\n"
+        f"Au plus {copilote_outils.APPELS_MAX} outils. Outils disponibles :\n"
+        + copilote_outils.catalogue_texte()
+        + "\nTu peux combiner requêtes SQL (lire le passé) et outils (prévoir, simuler, "
+        "recommander) dans la même réponse.\n"
+        "Si la question ne nécessite ni la base ni un outil (salutation, explication d'une "
+        "méthode), réponds exactement : AUCUNE.\n"
+        "Sinon réponds UNIQUEMENT avec les blocs ```sql``` et/ou ```outil```.\n\n"
         "Schéma :\n" + sql_agent.schema_texte()
     )
 
@@ -213,7 +240,21 @@ def _section_prevision_ventes(db: Session) -> list[str]:
         return [f"Prévision des ventes : indisponible ({exc})."]
     if not res["modeles"]:
         return ["Prévision des ventes : aucune vente importée."]
-    lignes = [f"Prévision des ventes à {res['horizon_jours']} jours, 3 modèles comparés :"]
+    lignes = [f"Prévision des ventes à {res['horizon_jours']} jours (à présenter en langage métier) :"]
+    lecture = res.get("lecture_dirigeant") or {}
+    if lecture:
+        lignes.append(f"  - {lecture['resume']}")
+        if lecture.get("fiabilite"):
+            lignes.append(f"  - Fiabilité : {lecture['fiabilite']}. {lecture.get('fiabilite_texte') or ''}".rstrip())
+        if lecture.get("scenario_bas") is not None:
+            lignes.append(
+                f"  - Fourchette prudente : {lecture['scenario_bas']:.0f} à {lecture['scenario_haut']:.0f}."
+            )
+        lignes += [f"  - Conseil : {c}" for c in lecture.get("conseils", [])]
+    lignes.append(
+        "  [Détail technique — ne citer les noms de méthodes et les mesures d'erreur que si "
+        "l'utilisateur demande comment la prévision est calculée]"
+    )
     lignes += [f"  - Synthèse : {t}" for t in res["synthese"]["texte"]]
     for m in res["modeles"]:
         if m["statut"] != "ok":
@@ -340,19 +381,12 @@ def _executer(db: Session, sql: str) -> tuple[sql_agent.ResultatRequete | None, 
         return None, f"erreur SQL : {str(getattr(exc, 'orig', exc)).strip().splitlines()[0][:300]}"
 
 
-def _interroger_base(db: Session, question: str) -> tuple[list[sql_agent.ResultatRequete], str | None]:
-    """Étapes 1-2 de l'accès à la base (cf. sql_agent) : le LLM écrit de 1 à
-    REQUETES_MAX requêtes, l'application les valide et les exécute en lecture
-    seule ; celles refusées ou en erreur sont renvoyées au LLM avec l'erreur,
-    qui les corrige UNE fois (les requêtes réussies sont conservées).
-
-    Retourne (résultats, motif d'échec éventuel). Liste vide sans motif : le
-    LLM a jugé que la question n'avait pas besoin de la base. `LLMError`
-    n'est PAS interceptée ici : elle remonte à `answer_question`."""
-    prompt_sql = system_prompt_sql()
-    requetes = sql_agent.extraire_requetes(llm_client.generate_completion(prompt_sql, f"Question : {question}"))
-    if not requetes:
-        return [], None
+def _executer_requetes(
+    db: Session, question: str, prompt_sql: str, requetes: list[str]
+) -> tuple[list[sql_agent.ResultatRequete], str | None]:
+    """Exécute les requêtes SQL du plan ; celles refusées ou en erreur sont
+    renvoyées au LLM avec l'erreur, qui les corrige UNE fois (les requêtes
+    réussies sont conservées). Retourne (résultats, motif d'échec éventuel)."""
     resultats, echecs = [], []
     for sql in requetes:
         res, motif = _executer(db, sql)
@@ -376,7 +410,60 @@ def _interroger_base(db: Session, question: str) -> tuple[list[sql_agent.Resulta
     return resultats, "; ".join(motifs or [m for _, m in echecs])
 
 
-def answer_question(db: Session, question: str) -> dict:
+_ECHANGES_MEMOIRE = 6  # derniers messages gardés en mémoire
+_LONGUEUR_MAX_MESSAGE = 700  # caractères par message (borne la taille du prompt)
+
+
+def _texte_historique(historique: list[dict] | None) -> str:
+    """Mémoire courte : derniers échanges, pour qu'une question de suite
+    (« et pour 90 jours ? », « et le produit suivant ? ») soit comprise."""
+    if not historique:
+        return ""
+    lignes = []
+    for m in historique[-_ECHANGES_MEMOIRE:]:
+        contenu = " ".join(str(m.get("contenu", "")).split())
+        if len(contenu) > _LONGUEUR_MAX_MESSAGE:
+            contenu = contenu[:_LONGUEUR_MAX_MESSAGE] + "…"
+        lignes.append(f"{'Utilisateur' if m.get('role') == 'user' else 'Copilote'} : {contenu}")
+    return (
+        "Conversation précédente (à utiliser pour comprendre une question de suite ; "
+        "les chiffres à jour sont ceux fournis plus bas) :\n" + "\n".join(lignes) + "\n\n"
+    )
+
+
+def _planifier(
+    db: Session, question: str, historique: list[dict] | None = None
+) -> tuple[list[sql_agent.ResultatRequete], list[copilote_outils.AppelOutil], str | None]:
+    """Orchestrateur du copilote (étape 1) : UN appel LLM de planification
+    décide quoi faire pour cette question —
+      - LIRE des données passées : requêtes SQL en lecture seule (sql_agent) ;
+      - CALCULER : outils de prévision, simulation « et si », réapprovisionnement
+        (copilote_outils), qui appellent les services métier ;
+      - rien (salutation, explication) : AUCUNE.
+    SQL et outils peuvent être combinés dans la même réponse. Aucun appel LLM
+    de plus qu'avec le SQL seul (sauf la correction éventuelle d'une requête).
+
+    Retourne (résultats SQL, appels d'outils exécutés, motif d'échec éventuel).
+    `LLMError` n'est PAS interceptée ici : elle remonte à `answer_question`."""
+    prompt_sql = system_prompt_sql()
+    plan = llm_client.generate_completion(prompt_sql, f"{_texte_historique(historique)}Question : {question}")
+
+    appels, erreurs_format = copilote_outils.extraire_appels(plan)
+    appels = [copilote_outils.executer(db, appel) for appel in appels]
+
+    requetes = sql_agent.extraire_requetes(plan)
+    resultats, motif = _executer_requetes(db, question, prompt_sql, requetes) if requetes else ([], None)
+    motifs = [m for m in (motif, *erreurs_format) if m]
+    return resultats, appels, "; ".join(motifs) or None
+
+
+def _interroger_base(db: Session, question: str) -> tuple[list[sql_agent.ResultatRequete], str | None]:
+    """Compatibilité : partie SQL seule de `_planifier`."""
+    resultats, _appels, motif = _planifier(db, question)
+    return resultats, motif
+
+
+def answer_question(db: Session, question: str, historique: list[dict] | None = None) -> dict:
     """Point d'entrée de /api/v1/copilot/chat.
 
     Sans fournisseur LLM configuré (cf. `llm_client.resolve_provider`),
@@ -409,10 +496,10 @@ def answer_question(db: Session, question: str) -> dict:
 
     fournisseur, _cle_api, modele = resolu
     llm_client._local.modele = None  # modèle réellement utilisé (secours éventuel), cf. llm_client
-    resultats, motif_echec = [], None
+    resultats, appels, motif_echec = [], [], None
     try:
         if settings.COPILOTE_ACCES_BASE:
-            resultats, motif_echec = _interroger_base(db, question)
+            resultats, appels, motif_echec = _planifier(db, question, historique)
 
         prompt_utilisateur = f"Contexte (indicateurs réels de l'entreprise) :\n{contexte}"
         for i, res in enumerate(resultats, 1):
@@ -420,18 +507,25 @@ def answer_question(db: Session, question: str) -> dict:
                 f"\n\nDonnées extraites de la base pour cette question — requête {i} "
                 f"(exécutée :\n{res.sql}) :\n{sql_agent.formater_pour_prompt(res)}"
             )
+        for appel in appels:
+            prompt_utilisateur += (
+                "\n\nRésultat d'un calcul effectué pour cette question (chiffres exacts, à utiliser "
+                "en priorité et à reformuler en langage métier) — "
+                + copilote_outils.formater_pour_prompt(appel)
+            )
         if motif_echec:
             prompt_utilisateur += (
                 f"\n\nNote : une partie de l'interrogation de la base a échoué ({motif_echec}). "
                 "Réponds avec les données disponibles et signale ce qui n'a pas pu être extrait."
             )
-        prompt_utilisateur += f"\n\nQuestion : {question}"
+        prompt_utilisateur += f"\n\n{_texte_historique(historique)}Question : {question}"
 
-        reponse_llm = llm_client.generate_completion(SYSTEM_PROMPT, prompt_utilisateur)
+        reponse_llm = llm_client.generate_completion(SYSTEM_PROMPT + _consigne_devise(), prompt_utilisateur)
         modele = llm_client.dernier_modele_utilise() or modele
         sources = ["analytics_service", "marketing_service", "forecasting_service"]
         if resultats:
             sources.append("base:sql")
+        sources += [f"outil:{a.nom}" for a in appels if a.resultat is not None]
         return {
             "reponse": reponse_llm,
             "sources": [*sources, f"llm:{fournisseur}"],
@@ -442,6 +536,11 @@ def answer_question(db: Session, question: str) -> dict:
             "requete_sql": resultats[0].sql if resultats else None,
             "requetes_sql": [r.sql for r in resultats],
             "lignes_base": sum(len(r.lignes) for r in resultats) if resultats else None,
+            "outils_utilises": [
+                {"nom": a.nom, "libelle": a.libelle or a.nom, "parametres": a.parametres,
+                 "statut": "erreur" if a.erreur else "ok", "erreur": a.erreur}
+                for a in appels
+            ],
         }
     except llm_client.LLMError as exc:
         return {

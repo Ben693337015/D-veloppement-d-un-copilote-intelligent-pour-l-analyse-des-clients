@@ -1,5 +1,35 @@
 # Journal des modifications
 
+## corrections23 — 15 octobre 2026
+
+**Copilote : finalisation pour la démonstration** (module Maslaw)
+- **Réponses lisibles** : les réponses du LLM (Markdown) sont mises en forme — vrais tableaux, gras, listes — au lieu d'afficher astérisques et « |---| ». Afficheur maison sans dépendance (`frontend/src/components/Markdown.jsx`), aucun HTML injecté.
+- **Page Copilote agrandie** : en-tête compact, zone de discussion sur presque toute la hauteur, réponses sur toute la largeur.
+- **Briefing proactif** (`GET /api/v1/copilot/briefing`, `app/services/copilote_briefing.py`) : à l'ouverture, « N points demandent votre attention » — produits bientôt en rupture, risque de trésorerie, tendance des ventes, clients à risque — avec un bouton « Demander au copilote » par point. Calcul sans LLM : instantané (≈ 0,15 s), fiable, disponible même sans clé API.
+- **Mémoire de conversation** : les 6 derniers échanges sont transmis, pour comprendre « et pour 90 jours ? ».
+- **Temps de réponse** :
+  - prévisions calculées en arrière-plan dès le démarrage de l'API (la première question n'attend plus les 3 modèles) ;
+  - pour un horizon non encore calculé, seul le modèle le plus fiable est entraîné (≈ 3 fois plus rapide) ;
+  - modèles « gpt-oss » (Groq) : effort de raisonnement réduit (`reasoning_effort: low`) sur les 2 appels LLM.
+- Consigne de mise en forme des réponses (phrase de réponse, tableau Markdown valide, 1 à 3 actions).
+- Montants des alertes de trésorerie formatés (« −54 418 »).
+- 270 tests pytest, 32 tests Vitest.
+
+## corrections22 — 15 octobre 2026
+
+**Copilote : orchestrateur « lire + calculer + recommander »** (module Maslaw)
+- Avant, le copilote ne savait que LIRE la base (agent SQL). Il peut maintenant aussi CALCULER à la demande, grâce à 4 outils (`app/services/copilote_outils.py`) qui appellent les services métier existants :
+  - `prevision_ventes` : ventes attendues sur un horizon choisi (7 à 90 jours), en langage métier, avec le détail par semaine ;
+  - `tresorerie_prevue` : solde projeté et alerte par rapport à un seuil choisi ;
+  - `simulation_ventes` : scénario « et si les ventes baissent de 15 % ? », avec l'effet sur la trésorerie (hypothèse affichée) ;
+  - `reapprovisionnement` : jours de stock restants au rythme de vente actuel, urgence et quantité à commander par produit (délai de livraison + couverture souhaitée), avec le coût estimé.
+- Orchestration (`copilot_service._planifier`) : un seul appel LLM de planification choisit des requêtes SQL et/ou des outils (blocs ```outil``` en JSON) ; aucun appel LLM supplémentaire. Format texte : fonctionne avec les 5 fournisseurs, sans « function calling » natif.
+- Sécurité : paramètres validés (Pydantic, bornes) avant tout calcul, au plus 3 outils par question, aucun outil n'écrit en base ; un outil en échec est signalé au LLM sans casser la réponse.
+- Interface Copilote : « Calculs effectués » sous chaque réponse, exemples de questions cliquables, présentation en langage courant.
+- Correctif trésorerie : l'alerte ne dit plus « solde négatif » quand le solde, encore positif, passe seulement sous un seuil critique positif.
+- Après un premier essai réel (Groq, gpt-oss-20b) : le LLM ajoutait « € » à des montants sans devise, refaisait de travers une division (« 0,15 € par jour » au lieu de ~330) et citait le nom du modèle. Correctifs : variable `DEVISE` (vide = aucun symbole affiché), écart par jour fourni tout calculé par la simulation, consigne « ne refais aucun calcul », et contexte qui présente d'abord la prévision en langage métier (détail des 3 modèles signalé comme technique).
+- 264 tests pytest (13 nouveaux), 29 tests Vitest (2 nouveaux).
+
 ## corrections21 — 14 octobre 2026
 
 **Prévision des ventes : vue en langage métier pour les dirigeants, détails techniques en option** (module Maslaw)

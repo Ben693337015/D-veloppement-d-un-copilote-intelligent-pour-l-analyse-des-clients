@@ -45,6 +45,10 @@ class Settings(BaseSettings):
     # app/services/sql_agent.py). Désactivable : le copilote se contente
     # alors de la synthèse d'indicateurs comme avant.
     COPILOTE_ACCES_BASE: bool = True
+    # Devise des montants importés (ex. "FCFA", "€") : les fichiers PME n'en
+    # indiquent pas. Vide = inconnue -> le copilote n'affiche aucun symbole
+    # monétaire plutôt que d'en inventer un.
+    DEVISE: str | None = None
     # Optionnel (recommandé en production) : connexion dédiée avec un rôle
     # PostgreSQL limité à SELECT, cf. scripts/init_db.sql (copilote_lecture).
     COPILOTE_DATABASE_URL_LECTURE: str | None = None
